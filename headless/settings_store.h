@@ -638,6 +638,11 @@ inline PerformanceSettings LoadPerformance(uint64_t title_id, const std::string&
         // Mario Kart World has not got past loading with the fast fences; without them it has.
         result.fast_gpu = title_id != 0x0400C3F00006E000ULL;
         result.reactive_flushing = false;
+        // Mario Kart World and Donkey Kong Bananza build pipelines in the middle of play, on the
+        // GPU thread that is already their bottleneck: they draw on meanwhile, with a few objects
+        // missing for a moment instead of a pause.
+        if (title_id == 0x0400C3F00006E000ULL || title_id == 0x040074A01BF12000ULL)
+            result.async_shaders = true;
     }
     if (title_id) read("/games/" + Settings::TitleKey(title_id));
     return result;

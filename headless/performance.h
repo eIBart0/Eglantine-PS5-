@@ -492,6 +492,10 @@ void ReportGpuThread(unsigned frame);
 void ReportMemoryPressure(unsigned seconds);
 // The heap's line in stderr.log: what it holds of the pool, what of that its blocks use, what it has given back.
 void ReportHeap(const char* why);
+// One EDEN_MEMORY_AT line in stderr.log: the pool's free memory (all of it and its largest block),
+// the heap, the guest's memory, the fiber stacks and the CPU's flexible memory, at a named moment
+// (app start, launcher, session start): what is already taken before a game loads.
+void ReportMemoryAt(const char* when);
 // Gives the heap's empty spaces back to the pool; the bytes returned.
 std::size_t TrimHeap(const char* why);
 inline std::atomic<unsigned> capture_passes{};

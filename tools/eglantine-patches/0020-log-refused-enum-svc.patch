@@ -1,5 +1,5 @@
 diff --git a/src/core/hle/kernel/svc.cpp b/src/core/hle/kernel/svc.cpp
-index db4713af67..b46d1d537d 100644
+index 8a1e64d81e..fbcd40cbe4 100644
 --- a/src/core/hle/kernel/svc.cpp
 +++ b/src/core/hle/kernel/svc.cpp
 @@ -2570,7 +2570,14 @@ void Call(Core::System& system, u32 imm) {

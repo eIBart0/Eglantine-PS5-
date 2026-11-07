@@ -1,0 +1,73 @@
+diff --git a/src/video_core/engines/maxwell_3d.cpp b/src/video_core/engines/maxwell_3d.cpp
+index 133987d214..9d87a64161 100644
+--- a/src/video_core/engines/maxwell_3d.cpp
++++ b/src/video_core/engines/maxwell_3d.cpp
+@@ -345,6 +345,12 @@ void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
+     if (draw_manager.HasDeferredDraw() && !DrawManager::IsInstanceLoopMethod(method)) [[unlikely]] {
+         draw_manager.DrawDeferred(*this, true);
+     }
++    // Of the GPU thread's 3D register writes, 60-72% write the value already there (Mario Kart
++    // World, Donkey Kong Bananza on the PS5); for dynamic state each one only made the next draw
++    // record that state again.
++    if (dirty.skip_same_value[method] && regs.reg_array[method] == argument) {
++        return;
++    }
+     regs.reg_array[method] = argument;
+     for (auto const& table : dirty.tables)
+         dirty.flags[table[method]] = true;
+diff --git a/src/video_core/engines/maxwell_3d.h b/src/video_core/engines/maxwell_3d.h
+index 8d74755d65..6e6e0bbe6a 100644
+--- a/src/video_core/engines/maxwell_3d.h
++++ b/src/video_core/engines/maxwell_3d.h
+@@ -3229,6 +3229,12 @@ public:
+ 
+         Flags flags;
+         Tables tables{};
++        // Registers whose write of the value they already hold changes nothing the renderer
++        // tracks: every dirty flag they map to is dynamic state, set again for each new command
++        // buffer anyway (filled by the Vulkan state tracker). Memory-backed state (buffers,
++        // vertex streams, render targets, shaders) always takes the write: Eden marks it on
++        // repeated writes on purpose (eden-emu PR 3712).
++        std::bitset<Regs::NUM_REGS> skip_same_value;
+     } dirty;
+ 
+     DrawManager draw_manager;
+diff --git a/src/video_core/renderer_vulkan/vk_state_tracker.cpp b/src/video_core/renderer_vulkan/vk_state_tracker.cpp
+index 0b132c97d6..56524f14bb 100644
+--- a/src/video_core/renderer_vulkan/vk_state_tracker.cpp
++++ b/src/video_core/renderer_vulkan/vk_state_tracker.cpp
+@@ -5,6 +5,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include <algorithm>
++#include <cstdlib>
+ #include <array>
+ #include <cstddef>
+ 
+@@ -255,6 +256,26 @@ void StateTracker::SetupTables(Tegra::Control::ChannelState& channel_state) {
+     SetupDirtyVertexBindings(tables);
+     SetupDirtySpecialOps(tables);
+     SetupRasterModes(tables);
++    // Writes of an unchanged value can be left out for the registers that only feed dynamic
++    // state (Maxwell3D::DirtyState::skip_same_value). EDEN_NX2_SKIP_SAME_STATE=0: mark them all.
++    static const bool skip_same = [] {
++        const char* value = std::getenv("EDEN_NX2_SKIP_SAME_STATE");
++        return value == nullptr || value[0] != '0';
++    }();
++    auto& skip = channel_state.payload->maxwell_3d.dirty.skip_same_value;
++    skip.reset();
++    if (skip_same) {
++        const auto dynamic = [](u8 flag) {
++            return flag == VideoCommon::Dirty::NullEntry || (flag >= Dirty::Viewports && flag < Dirty::Last);
++        };
++        for (size_t method = 0; method < Maxwell::NUM_REGS; ++method) {
++            const u8 first = tables[0][method];
++            const u8 second = tables[1][method];
++            if ((first != 0 || second != 0) && dynamic(first) && dynamic(second)) {
++                skip.set(method);
++            }
++        }
++    }
+ }
+ 
+ void StateTracker::ChangeChannel(Tegra::Control::ChannelState& channel_state) {

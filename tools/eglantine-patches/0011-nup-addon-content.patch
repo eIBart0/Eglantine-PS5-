@@ -1,8 +1,8 @@
 diff --git a/src/core/core.cpp b/src/core/core.cpp
-index 993b48f..76ff6e1 100644
+index 71e57ab5fa..927d225d62 100644
 --- a/src/core/core.cpp
 +++ b/src/core/core.cpp
-@@ -533,6 +533,9 @@ struct System::Impl {
+@@ -539,6 +539,9 @@ struct System::Impl {
          fs_controller.Reset();
          cheat_engine.reset();
          core_timing.ClearPendingEvents();
@@ -13,7 +13,7 @@ index 993b48f..76ff6e1 100644
          audio_core.reset();
          gpu_core.reset();
 diff --git a/src/core/file_sys/content_archive.cpp b/src/core/file_sys/content_archive.cpp
-index 1ba7bd3..248a8c2 100644
+index 1ba7bd3de3..248a8c2021 100644
 --- a/src/core/file_sys/content_archive.cpp
 +++ b/src/core/file_sys/content_archive.cpp
 @@ -118,6 +118,10 @@ NCA::NCA(VirtualFile file_, const NCA* base_nca, bool allow_missing_base)
@@ -88,7 +88,7 @@ index 1ba7bd3..248a8c2 100644
  
  VirtualDir NCA::GetExeFS() const {
 diff --git a/src/core/file_sys/content_archive.h b/src/core/file_sys/content_archive.h
-index b88fcdc..277cf88 100644
+index b88fcdc4ee..277cf8838f 100644
 --- a/src/core/file_sys/content_archive.h
 +++ b/src/core/file_sys/content_archive.h
 @@ -7,6 +7,7 @@
@@ -120,7 +120,7 @@ index b88fcdc..277cf88 100644
  
  } // namespace FileSys
 diff --git a/src/core/file_sys/nup_container.cpp b/src/core/file_sys/nup_container.cpp
-index 27ac448..0ba905d 100644
+index a0850448b1..c0e06de01b 100644
 --- a/src/core/file_sys/nup_container.cpp
 +++ b/src/core/file_sys/nup_container.cpp
 @@ -19,6 +19,8 @@
@@ -132,7 +132,7 @@ index 27ac448..0ba905d 100644
  #include "core/file_sys/vfs/vfs_offset.h"
  
  namespace FileSys {
-@@ -839,4 +841,85 @@ Loader::ResultStatus NupContainer::VerifyIntegrity(
+@@ -858,4 +860,85 @@ Loader::ResultStatus NupContainer::VerifyIntegrity(
      return Loader::ResultStatus::Success;
  }
  
@@ -219,7 +219,7 @@ index 27ac448..0ba905d 100644
 +
  } // namespace FileSys
 diff --git a/src/core/file_sys/nup_container.h b/src/core/file_sys/nup_container.h
-index 8787717..2984775 100644
+index bbdbffa499..30733afb1d 100644
 --- a/src/core/file_sys/nup_container.h
 +++ b/src/core/file_sys/nup_container.h
 @@ -7,6 +7,7 @@
@@ -238,7 +238,7 @@ index 8787717..2984775 100644
  #include "core/file_sys/vfs/vfs_types.h"
  #include "core/file_sys/vfs/vfs_vector.h"
  #include "core/loader/loader.h"
-@@ -208,4 +210,39 @@ private:
+@@ -211,4 +213,39 @@ private:
      std::shared_ptr<NupDecompressCache> cache;
  };
  
@@ -279,7 +279,7 @@ index 8787717..2984775 100644
 +
  } // namespace FileSys
 diff --git a/src/core/file_sys/registered_cache.h b/src/core/file_sys/registered_cache.h
-index 89140a2..895ff8c 100644
+index 89140a2e95..895ff8ce0a 100644
 --- a/src/core/file_sys/registered_cache.h
 +++ b/src/core/file_sys/registered_cache.h
 @@ -224,6 +224,7 @@ enum class ContentProviderUnionSlot {
@@ -291,10 +291,10 @@ index 89140a2..895ff8c 100644
  };
  
 diff --git a/src/core/loader/nup.cpp b/src/core/loader/nup.cpp
-index 7ddfb89..e41ff02 100644
+index 3e52cdb1dc..3640cf4482 100644
 --- a/src/core/loader/nup.cpp
 +++ b/src/core/loader/nup.cpp
-@@ -150,18 +150,6 @@ AppLoader_NUP::AppLoader_NUP(FileSys::VirtualFile file_)
+@@ -168,18 +168,6 @@ AppLoader_NUP::AppLoader_NUP(FileSys::VirtualFile file_)
                  program.localized_icons.front().second, "icon.dat");
          }
      }
@@ -313,7 +313,7 @@ index 7ddfb89..e41ff02 100644
  }
  
  AppLoader_NUP::~AppLoader_NUP() = default;
-@@ -191,6 +179,16 @@ AppLoader::LoadResult AppLoader_NUP::Load(Kernel::KProcess& process, Core::Syste
+@@ -209,6 +197,16 @@ AppLoader::LoadResult AppLoader_NUP::Load(Kernel::KProcess& process, Core::Syste
          std::make_shared<FileSys::RomFSFactory>(*this, system.GetContentProvider(),
                                                  system.GetFileSystemController()));
  
@@ -331,7 +331,7 @@ index 7ddfb89..e41ff02 100644
      return result;
  }
 diff --git a/src/core/loader/nup.h b/src/core/loader/nup.h
-index 1f9dd59..63f89d9 100644
+index 1f9dd5922b..63f89d900a 100644
 --- a/src/core/loader/nup.h
 +++ b/src/core/loader/nup.h
 @@ -12,6 +12,7 @@

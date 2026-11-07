@@ -1,8 +1,8 @@
 diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
-index bb8c7f57a3..1facc64a45 100644
+index 783c77ddae..b3320d8367 100644
 --- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
 +++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
-@@ -381,8 +381,18 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
+@@ -480,8 +480,18 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
      if (no_mesh_file && (no_mesh_check++ % 1024) == 0) {
          no_mesh = std::filesystem::exists(no_mesh_file);
      }

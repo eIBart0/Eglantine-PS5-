@@ -1,8 +1,8 @@
 diff --git a/src/video_core/gpu.cpp b/src/video_core/gpu.cpp
-index 6dbabcb43a..dfc07dbc57 100644
+index 48cf6abce8..4b43082e55 100644
 --- a/src/video_core/gpu.cpp
 +++ b/src/video_core/gpu.cpp
-@@ -141,7 +141,13 @@ struct GPU::Impl {
+@@ -154,7 +154,13 @@ struct GPU::Impl {
  
      void WaitForSyncOperation(const u64 fence) {
          std::unique_lock lck{sync_request_mutex};

@@ -1,8 +1,8 @@
 diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
-index 1a0e88d7a7..d8fa5b0bbe 100644
+index 883354cc7c..6e2338df7e 100644
 --- a/src/core/hle/service/nx2_gsv.h
 +++ b/src/core/hle/service/nx2_gsv.h
-@@ -2504,6 +2504,7 @@ private:
+@@ -2587,6 +2587,7 @@ private:
          u32 height;
          u64 pts;
          bool end;
@@ -10,7 +10,7 @@ index 1a0e88d7a7..d8fa5b0bbe 100644
      };
      struct Fence {
          u32 syncpoint;
-@@ -2635,26 +2636,26 @@ private:
+@@ -2718,26 +2719,26 @@ private:
          u32 value;
          {
              std::scoped_lock lk{m_mutex};
@@ -55,7 +55,7 @@ index 1a0e88d7a7..d8fa5b0bbe 100644
                  value = m_sync_base + ++m_handed;
              }
          }
-@@ -2717,6 +2718,8 @@ private:
+@@ -2800,6 +2801,8 @@ private:
          {
              std::scoped_lock lk{m_mutex};
              m_inputs.clear();
@@ -64,7 +64,7 @@ index 1a0e88d7a7..d8fa5b0bbe 100644
              m_flush = true;
              m_stream_ended = false;
              m_ready->room.store(true, std::memory_order_relaxed);
-@@ -2819,7 +2822,9 @@ private:
+@@ -2902,7 +2905,9 @@ private:
                  const auto [width, height] = WriteImage(decoder.get(), image, frame, bytes);
                  lk.lock();
                  // Even an image written during a flush counts: the client waits for its value.
@@ -75,7 +75,7 @@ index 1a0e88d7a7..d8fa5b0bbe 100644
                  if (frame.end) {
                      m_stream_ended = true;
                      m_ready->room.store(false, std::memory_order_relaxed);
-@@ -2991,6 +2996,8 @@ private:
+@@ -3074,6 +3079,8 @@ private:
      std::string m_codec;
      u32 m_width{};
      u32 m_height{};

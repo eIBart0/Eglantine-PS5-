@@ -1,8 +1,8 @@
 diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
-index 7ae65f0f77..b25843f948 100644
+index 968e0a4c3f..883354cc7c 100644
 --- a/src/core/hle/service/nx2_gsv.h
 +++ b/src/core/hle/service/nx2_gsv.h
-@@ -249,8 +249,8 @@ private:
+@@ -251,8 +251,8 @@ private:
          request.syncpoint = syncpoint;
          request.pending = true;
          auto& manager = system.Host1x().GetSyncpointManager();

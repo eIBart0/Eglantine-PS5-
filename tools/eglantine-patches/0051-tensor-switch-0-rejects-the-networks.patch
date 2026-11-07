@@ -1,0 +1,18 @@
+diff --git a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+index bf440ef721..1dc9363a28 100644
+--- a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
++++ b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+@@ -1633,8 +1633,12 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             // or with EDEN_NX2_TENSOR set (the QMD still completes when rejected).
+             // EDEN_NX2_TENSOR=stub keeps the rest of the program but makes every HMMA D = C, and
+             // EDEN_NX2_TENSOR=compact forces the compact form below.
++            // EDEN_NX2_TENSOR=0 (the PS5 app's testing switch) rejects every network instead,
++            // so the upscale stand-in runs.
+             static const char* const forced_mode = std::getenv("EDEN_NX2_TENSOR");
+-            const char* const mode = forced_mode      ? forced_mode
++            const bool forced_off = forced_mode != nullptr && std::string_view{forced_mode} == "0";
++            const char* const mode = forced_off       ? nullptr
++                                     : forced_mode    ? forced_mode
+                                      : !tensor        ? nullptr
+                                      : compact_tensor ? "compact"
+                                                       : "1";

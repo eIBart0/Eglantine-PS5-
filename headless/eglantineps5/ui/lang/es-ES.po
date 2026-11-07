@@ -2502,3 +2502,71 @@ msgstr "Escrituras de CPU en páginas de GPU"
 #: pe/ui/testing.cpp
 msgid "By default (Switch 2 games) the CPU's bytes go straight into the GPU's buffer, without first copying the page back, which waited for the GPU. Off: the old copy."
 msgstr "Por defecto (juegos de Switch 2), los bytes de la CPU van directos al búfer de la GPU, sin copiar antes la página, que esperaba a la GPU. «No»: la copia de antes."
+
+#: pe/ui/testing.cpp
+msgid "Guest thread stacks"
+msgstr "Pilas de los hilos"
+
+#: pe/ui/testing.cpp
+msgid "Memory for each game thread's stack: 512 KB for the game's, 1 MB for the system's. If a game crashes where it did not before, try 1 MB. 2 MB is as before."
+msgstr "Memoria de la pila de cada hilo: 512 KB los del juego, 1 MB los del sistema. Si un juego se cuelga donde antes no, prueba 1 MB. 2 MB es como antes."
+
+#: pe/ui/testing.cpp
+msgid "Screen buffers"
+msgstr "Búferes de pantalla"
+
+#: pe/ui/testing.cpp
+msgid "By default the picture is sent at the output resolution and the console scales it: 120 MB less at 1080p. 4K sends every frame at 3840x2160, as before."
+msgstr "Por defecto la imagen sale a la resolución de salida y la consola la escala: 120 MB menos a 1080p. «4K» manda cada fotograma a 3840x2160, como antes."
+
+#: pe/ui/testing.cpp
+msgid "Smaller textures"
+msgstr "Texturas más pequeñas"
+
+#: pe/ui/testing.cpp
+msgid "Textures with transparency take half the memory (BC1, not BC3), with harder edges on leaves and fences. By default only in Mario Kart World."
+msgstr "Las texturas con transparencia ocupan la mitad (BC1, no BC3), con bordes más duros en hojas y rejas. Por defecto, solo en Mario Kart World."
+
+#: pe/ui/testing.cpp
+msgid "Thread placement"
+msgstr "Reparto de hilos"
+
+#: pe/ui/testing.cpp
+msgid "By default the first guest cores and the GPU thread get a physical core each and the other threads share the rest. Off leaves it to the console, as before."
+msgstr "Por defecto, los primeros núcleos del juego y el hilo de GPU tienen un núcleo físico cada uno, y los demás hilos comparten el resto. «No» lo deja a la consola, como antes."
+
+#: pe/ui/testing.cpp
+msgid "Game in a clean process"
+msgstr "Juego en un proceso limpio"
+
+#: pe/ui/testing.cpp
+msgid "A game started from the library runs in a new process, without what the launcher left in memory (a few seconds of black screen). Off: same process, as before."
+msgstr "Un juego abierto desde la biblioteca arranca en un proceso nuevo, sin lo que el lanzador dejó en memoria (unos segundos en negro). «No»: el mismo proceso, como antes."
+
+#: pe/ui/testing.cpp
+msgid "App memory allocator"
+msgstr "Gestor de memoria de la app"
+
+#: pe/ui/testing.cpp
+msgid "During a game the app's own memory comes from mimalloc, which gives what is free back to the pool. Off keeps Sony's allocator for everything, as before."
+msgstr "Durante el juego, la memoria propia de la app sale de mimalloc, que devuelve al pool la que queda libre. «No» deja el gestor de Sony para todo, como antes."
+
+#: pe/ui/testing.cpp
+msgid "SSD swap"
+msgstr "Swap al SSD"
+
+#: pe/ui/testing.cpp
+msgid "When memory runs short, game memory the GPU already has a copy of goes to a file on the SSD (4 GB by default) and comes back when the game touches it, in 1-2 ms."
+msgstr "Cuando falta memoria, la memoria del juego de la que la GPU ya tiene copia va a un fichero del SSD (4 GB por defecto) y vuelve cuando el juego la toca, en 1-2 ms."
+
+#: pe/ui/testing.cpp
+msgid "Repeated register writes"
+msgstr "Escrituras repetidas de registros"
+
+#: pe/ui/testing.cpp
+msgid "By default a GPU register write that repeats its value is left out when it only feeds the drawing state: less work for the GPU thread. Mark all: as before."
+msgstr "Por defecto se omite la escritura de un registro de GPU que repite su valor cuando solo afecta al estado de dibujo: menos trabajo para el hilo de GPU. «Marcarlas todas»: como antes."
+
+#: pe/ui/testing.cpp
+msgid "Mark all"
+msgstr "Marcarlas todas"

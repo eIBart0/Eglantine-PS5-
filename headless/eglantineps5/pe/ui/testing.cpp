@@ -107,6 +107,54 @@ constexpr Switch kSwitches[] = {
      {"EDEN_NX2_GPU_ONLY_LAZY", nullptr},
      {{{TR("Default"), {nullptr, nullptr}}, {TR("Whole"), {"0", nullptr}}}},
      2},
+    {TR("Guest thread stacks"),
+     TR("Memory for each game thread's stack: 512 KB for the game's, 1 MB for the system's. If a game "
+        "crashes where it did not before, try 1 MB. 2 MB is as before."),
+     {"EDEN_FIBER_STACK_KIB", nullptr},
+     {{{TR("Default"), {nullptr, nullptr}}, {"1 MB", {"1024", nullptr}}, {"2 MB", {"2048", nullptr}}}},
+     3},
+    {TR("Screen buffers"),
+     TR("By default the picture is sent at the output resolution and the console scales it: 120 MB "
+        "less at 1080p. 4K sends every frame at 3840x2160, as before."),
+     {"EDEN_PS5_SCANOUT_4K", nullptr},
+     {{{TR("Default"), {nullptr, nullptr}}, {"4K", {"1", nullptr}}}},
+     2},
+    {TR("Smaller textures"),
+     TR("Textures with transparency take half the memory (BC1, not BC3), with harder edges on leaves "
+        "and fences. By default only in Mario Kart World."),
+     {"EDEN_PS5_ASTC_BC1", nullptr},
+     {{{TR("Default"), {nullptr, nullptr}}, {TR("Off"), {"0", nullptr}}, {TR("Every game"), {"1", nullptr}}}},
+     3},
+    {TR("Thread placement"),
+     TR("By default the first guest cores and the GPU thread get a physical core each and the other "
+        "threads share the rest. Off leaves it to the console, as before."),
+     {"EDEN_PS5_PLACEMENT", nullptr},
+     {{{TR("Default"), {nullptr, nullptr}}, {TR("Off"), {"0", nullptr}}}},
+     2},
+    {TR("Game in a clean process"),
+     TR("A game started from the library runs in a new process, without what the launcher left in "
+        "memory (a few seconds of black screen). Off: same process, as before."),
+     {"EDEN_PS5_CLEAN_LAUNCH", nullptr},
+     {{{TR("On"), {nullptr, nullptr}}, {TR("Off"), {"0", nullptr}}}},
+     2},
+    {TR("App memory allocator"),
+     TR("During a game the app's own memory comes from mimalloc, which gives what is free back to "
+        "the pool. Off keeps Sony's allocator for everything, as before."),
+     {"EDEN_HEAP_MIMALLOC", nullptr},
+     {{{TR("Default"), {nullptr, nullptr}}, {TR("Off"), {"0", nullptr}}}},
+     2},
+    {TR("SSD swap"),
+     TR("When memory runs short, game memory the GPU already has a copy of goes to a file on the "
+        "SSD (4 GB by default) and comes back when the game touches it, in 1-2 ms."),
+     {"EDEN_GUEST_SWAP", "EDEN_GUEST_SWAP_MIB"},
+     {{{TR("Default"), {nullptr, nullptr}}, {"8 GB", {nullptr, "8192"}}, {TR("Off"), {"0", nullptr}}}},
+     3},
+    {TR("Repeated register writes"),
+     TR("By default a GPU register write that repeats its value is left out when it only feeds the "
+        "drawing state: less work for the GPU thread. Mark all: as before."),
+     {"EDEN_NX2_SKIP_SAME_STATE", nullptr},
+     {{{TR("Default"), {nullptr, nullptr}}, {TR("Mark all"), {"0", nullptr}}}},
+     2},
 };
 constexpr int kSwitchCount = static_cast<int>(std::size(kSwitches));
 

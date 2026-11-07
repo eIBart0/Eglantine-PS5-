@@ -277,6 +277,8 @@ struct SparseRange {
     bool promote = false;               // writes to shared slots are promoted (the service runs)
     std::uint16_t* fine = nullptr;      // per slot: 16 KiB pages a Fine slot keeps (low 8 bits), times made whole (bits 8-11)
     std::uint32_t* fine_after = nullptr; // per slot: the scan pass from which it may be made Fine again
+    std::uint32_t* cold = nullptr;       // per slot: bytes of it the caches called cold (guest_memory_service.inc)
+    std::uint32_t* swap_after = nullptr; // per slot: the swapper tick from which it may go to the SSD again
 };
 std::array<SparseRange, 64> sparse_ranges;
 std::mutex sparse_mutex;
@@ -393,6 +395,10 @@ void ReleaseSparse(SparseRange& range) {
     range.fine = nullptr;
     delete[] range.fine_after;
     range.fine_after = nullptr;
+    delete[] range.cold;
+    range.cold = nullptr;
+    delete[] range.swap_after;
+    range.swap_after = nullptr;
     range.begin.store(0, std::memory_order_release);
     delete[] range.owned;
     delete[] range.physical;
@@ -820,11 +826,14 @@ bool CommitMemoryRangeFrom(void* address, std::size_t size, bool high) noexcept 
         return false;
     }
     if (blocks > 1) committed_split.fetch_add(1, std::memory_order_relaxed);
-    // The heap grows through here: no stdio (it may allocate).
-    char line[160];
-    const int length = std::snprintf(line, sizeof(line), "EDEN_HEAP_PIECE bytes=%zu va=%p blocks=%u%s reserve_blocks=%u\n", size,
-                                     address, blocks, high ? "" : " large", reserve_blocks);
-    if (length > 0) Note(line);
+    // The heap grows through here: no stdio (it may allocate). One large page at a time is
+    // mimalloc's (headless/mimalloc_heap.c), many times a second: not each in the kernel log.
+    if (size != LargePage || reserve_blocks != 0) {
+        char line[160];
+        const int length = std::snprintf(line, sizeof(line), "EDEN_HEAP_PIECE bytes=%zu va=%p blocks=%u%s reserve_blocks=%u\n", size,
+                                         address, blocks, high ? "" : " large", reserve_blocks);
+        if (length > 0) Note(line);
+    }
     std::memset(address, 0, size);
     return true;
 #else

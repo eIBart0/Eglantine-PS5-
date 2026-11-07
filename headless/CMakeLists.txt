@@ -151,13 +151,29 @@ string(REPLACE "    to.impl->previous_fiber = weak_from.lock();"
 string(REPLACE "    // \"from\" might no longer be valid if the thread was killed\n    if (auto from = weak_from.lock()) {"
     "    if (auto* from = static_cast<Fiber*>(transfer.data)) {" fiber_source "${fiber_source}")
 if(PS5_NATIVE)
-# Native fibers keep their 2MiB usable stack, but reserve it in the CPU flexible pool.
-# ThreadToFiber needs only context bookkeeping and allocates no unused private stack.
-string(REPLACE "    std::array<u8, DEFAULT_STACK_SIZE> stack{};"
-    "    ::Eden::FiberStack stack;" fiber_source "${fiber_source}")
-string(REPLACE "    impl->stack_limit = impl->stack.data();"
-    "    impl->stack.Allocate(DEFAULT_STACK_SIZE);\n    impl->stack_limit = impl->stack.data();"
-    fiber_source "${fiber_source}")
+# Native fibers take their stack from the CPU flexible pool (headless/fiber_stack.h), sized by the
+# kind of guest thread they run. ThreadToFiber needs only context bookkeeping and allocates no
+# unused private stack. Two forms: the core's std::array member, and since 9c83502ed8 a
+# std::unique_ptr filled by new[] (left there, every stack was 2 MiB of the heap).
+set(fiber_array_member "    std::array<u8, DEFAULT_STACK_SIZE> stack{};")
+set(fiber_pointer_member "    std::unique_ptr<u8[]> stack;")
+set(fiber_pointer_setup "    impl->stack.reset(new u8[DEFAULT_STACK_SIZE]);\n    impl->stack_limit = impl->stack.get();\n    u8* stack_base = impl->stack_limit + DEFAULT_STACK_SIZE;\n    impl->context = boost::context::detail::make_fcontext(stack_base, DEFAULT_STACK_SIZE,")
+string(FIND "${fiber_source}" "${fiber_array_member}" fiber_array_at)
+string(FIND "${fiber_source}" "${fiber_pointer_member}" fiber_pointer_at)
+string(FIND "${fiber_source}" "${fiber_pointer_setup}" fiber_setup_at)
+if(NOT fiber_pointer_at LESS 0 AND NOT fiber_setup_at LESS 0)
+    string(REPLACE "${fiber_pointer_member}" "    ::Eden::FiberStack stack;" fiber_source "${fiber_source}")
+    string(REPLACE "${fiber_pointer_setup}"
+        "    impl->stack.Allocate(::Eden::FiberStack::NextSize());\n    impl->stack_limit = impl->stack.data();\n    u8* stack_base = impl->stack_limit + impl->stack.size();\n    impl->context = boost::context::detail::make_fcontext(stack_base, impl->stack.size(),"
+        fiber_source "${fiber_source}")
+elseif(NOT fiber_array_at LESS 0)
+    string(REPLACE "${fiber_array_member}" "    ::Eden::FiberStack stack;" fiber_source "${fiber_source}")
+    string(REPLACE "    impl->stack_limit = impl->stack.data();"
+        "    impl->stack.Allocate(DEFAULT_STACK_SIZE);\n    impl->stack_limit = impl->stack.data();"
+        fiber_source "${fiber_source}")
+else()
+    message(FATAL_ERROR "Pinned fiber stack changed; review headless/fiber_stack.h")
+endif()
 string(PREPEND fiber_source "#include \"${EDEN_PORT_DIR}/fiber_stack.h\"\n")
 endif()
 write_derived("${PORT_BUILD_DIR}/fiber.cpp" "${fiber_source}")
@@ -840,14 +856,21 @@ endif()
 # Guest core idle: count each wait and how long it lasted, and spin on the
 # interrupt flag for a bounded time before sleeping on the condition variable, because waking a
 # sleeping host thread puts the host scheduler's latency on the guest's critical path.
-string(FIND "${physical_core_source}" "void PhysicalCore::Idle() {" idle_begin)
+# Newer cores pass the kernel (their own Switch 2 spin, EDEN_NX2_IDLE_SPIN_US, yields: a system
+# call each time on the PS5); the port's spin below replaces it under either signature.
+set(idle_signature "void PhysicalCore::Idle() {")
+string(FIND "${physical_core_source}" "${idle_signature}" idle_begin)
+if(idle_begin LESS 0)
+    set(idle_signature "void PhysicalCore::Idle(KernelCore& kernel) {")
+    string(FIND "${physical_core_source}" "${idle_signature}" idle_begin)
+endif()
 string(FIND "${physical_core_source}" "bool PhysicalCore::IsInterrupted() const {" idle_end)
 if(idle_begin LESS 0 OR idle_end LESS idle_begin)
     message(FATAL_ERROR "Pinned PhysicalCore::Idle changed")
 endif()
 math(EXPR idle_length "${idle_end} - ${idle_begin}")
 string(SUBSTRING "${physical_core_source}" ${idle_begin} ${idle_length} idle_old)
-string(REPLACE "${idle_old}" [=[void PhysicalCore::Idle() {
+set(idle_body [=[
     const long long start = ::Eden::Performance::NowNs();
     const unsigned spins = ::Eden::Performance::idle_spin_iterations.load(std::memory_order_relaxed);
     for (unsigned i = 0; i < spins && !m_is_interrupted.load(std::memory_order_acquire); ++i)
@@ -861,7 +884,12 @@ string(REPLACE "${idle_old}" [=[void PhysicalCore::Idle() {
     ::Eden::Performance::CountIdle(m_core_index, ::Eden::Performance::NowNs() - start, slept);
 }
 
-]=] physical_core_source "${physical_core_source}")
+]=])
+set(idle_kernel "")
+if(idle_signature MATCHES "kernel")
+    set(idle_kernel "    (void)kernel;\n")
+endif()
+string(REPLACE "${idle_old}" "${idle_signature}\n${idle_kernel}${idle_body}" physical_core_source "${physical_core_source}")
 string(REPLACE "${prefetch_old}"
     "            } else {\n                interface->LogBacktrace(process);\n                if (prefetch_abort)\n                    ::Eden::RecordGuestFault(\"guest thread \" + Core::GetThreadName(thread).value_or(\"?\") +\n                                             \" jumped to an unmapped address\");\n            }\n            thread->RequestSuspend(kernel, SuspendType::Debug);"
     physical_core_source "${physical_core_source}")
@@ -1513,7 +1541,16 @@ string(REPLACE "${wait_end}" [=[    void KThread::SetState(KernelCore& kernel, T
             ::Eden::Performance::NoteRunnable(GetThreadId(), ::Eden::Performance::NowNs());
         }]=] thread_source "${thread_source}")
 
-write_derived("${PORT_BUILD_DIR}/k_thread.cpp" "#include \"${EDEN_PORT_DIR}/performance.h\"\n${thread_source}")
+# A game's own threads get the small fiber stack (headless/fiber_stack.h).
+set(thread_fiber_site "        // Initialize emulation parameters.\n        thread->m_host_context = std::make_shared<Common::Fiber>(std::move(init_func));")
+string(FIND "${thread_source}" "${thread_fiber_site}" thread_fiber_at)
+if(thread_fiber_at LESS 0)
+    message(FATAL_ERROR "Pinned KThread::InitializeThread fiber changed; review headless/fiber_stack.h")
+endif()
+string(REPLACE "${thread_fiber_site}"
+    "        // Initialize emulation parameters.\n        ::Eden::FiberStack::next_is_user = type == ThreadType::User;\n        thread->m_host_context = std::make_shared<Common::Fiber>(std::move(init_func));"
+    thread_source "${thread_source}")
+write_derived("${PORT_BUILD_DIR}/k_thread.cpp" "#include \"${EDEN_PORT_DIR}/performance.h\"\n#include \"${EDEN_PORT_DIR}/fiber_stack.h\"\n${thread_source}")
 get_target_property(core_sources core SOURCES)
 list(REMOVE_ITEM core_sources hle/kernel/k_thread.cpp)
 list(APPEND core_sources "${PORT_BUILD_DIR}/k_thread.cpp")
@@ -2682,7 +2719,15 @@ void Initialize() {
         "${EDEN_PORT_DIR}/crash_report.cpp" "${EDEN_PORT_DIR}/stop_limit.cpp"
         "${EDEN_PORT_DIR}/elevation/elevation.cpp"
         "${eden_app_crt}" "${PORT_ROOT}/src/lifecycle.c" "${PORT_ROOT}/src/direct_memory.c"
-        "${PORT_BUILD_DIR}/app_heap.c")
+        "${PORT_BUILD_DIR}/app_heap.c" "${EDEN_PORT_DIR}/mimalloc_heap.c")
+    # mimalloc for a game's session (headless/mimalloc_heap.c), pinned in tools/deps.json.
+    set(mimalloc_root "${PORT_ROOT}/.deps/mimalloc-56dc5eb801")
+    if(NOT EXISTS "${mimalloc_root}/src/static.c")
+        message(FATAL_ERROR "mimalloc is missing: make deps")
+    endif()
+    set_source_files_properties("${EDEN_PORT_DIR}/mimalloc_heap.c" PROPERTIES
+        INCLUDE_DIRECTORIES "${mimalloc_root}/include;${mimalloc_root}/src"
+        COMPILE_OPTIONS "-O2;-w;-fno-builtin-malloc")
     target_compile_definitions(eden-headless PRIVATE PS5_NATIVE=1
         $<$<BOOL:${EDEN_MKW_DIAGNOSTICS}>:EDEN_MKW_DIAGNOSTICS=1>)
     set_property(TARGET eden-headless APPEND PROPERTY LINK_DEPENDS

@@ -32,10 +32,10 @@ index 07de25f18f..6958a64d98 100644
      boost::container::small_vector<VkDescriptorUpdateTemplateEntry, 32> entries;
      u32 binding{};
 diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
-index 0710bea6bc..e1680ac23c 100644
+index 78a6e1cb35..2cc5c4a9c9 100644
 --- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
 +++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
-@@ -690,7 +690,7 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
+@@ -703,7 +703,7 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
          });
      }
      const bool is_rescaling{texture_cache.IsRescaling()};
@@ -44,7 +44,7 @@ index 0710bea6bc..e1680ac23c 100644
      const bool bind_pipeline{scheduler.UpdateGraphicsPipeline(this)};
      const bool bind_descriptor_buffer{
          descriptor_set_layout && uses_descriptor_buffer &&
-@@ -730,20 +730,22 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
+@@ -744,20 +744,22 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
              }
              cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, *pipeline);
          }
@@ -75,10 +75,10 @@ index 0710bea6bc..e1680ac23c 100644
          if (!descriptor_set_layout) {
              return;
 diff --git a/src/video_core/renderer_vulkan/vk_scheduler.cpp b/src/video_core/renderer_vulkan/vk_scheduler.cpp
-index f23e07ec30..1218f882c8 100644
+index d78bf0a5f0..ffa96ee6cd 100644
 --- a/src/video_core/renderer_vulkan/vk_scheduler.cpp
 +++ b/src/video_core/renderer_vulkan/vk_scheduler.cpp
-@@ -323,12 +323,14 @@ bool Scheduler::UpdateGraphicsPipeline(GraphicsPipeline* pipeline) {
+@@ -336,12 +336,14 @@ bool Scheduler::UpdateGraphicsPipeline(GraphicsPipeline* pipeline) {
      return true;
  }
  
@@ -96,11 +96,11 @@ index f23e07ec30..1218f882c8 100644
  }
  
 diff --git a/src/video_core/renderer_vulkan/vk_scheduler.h b/src/video_core/renderer_vulkan/vk_scheduler.h
-index ca0ef54a28..54a31d952c 100644
+index dbf37ac590..6be428c31c 100644
 --- a/src/video_core/renderer_vulkan/vk_scheduler.h
 +++ b/src/video_core/renderer_vulkan/vk_scheduler.h
-@@ -99,7 +99,7 @@ public:
-     bool UpdateGraphicsPipeline(GraphicsPipeline* pipeline);
+@@ -113,7 +113,7 @@ public:
+     }
  
      /// Update the rescaling state. Returns true if the state has to be updated.
 -    bool UpdateRescaling(bool is_rescaling);
@@ -108,7 +108,7 @@ index ca0ef54a28..54a31d952c 100644
  
      /// Returns true when the descriptor buffer chunk has to be bound into the command buffer.
      bool UpdateDescriptorBufferChunk(u32 descriptor_chunk);
-@@ -301,6 +301,7 @@ private:
+@@ -315,6 +315,7 @@ private:
          GraphicsPipeline* graphics_pipeline = nullptr;
          bool is_rescaling = false;
          bool rescaling_defined = false;

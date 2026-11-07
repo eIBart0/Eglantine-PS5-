@@ -12,6 +12,9 @@
 //   Fine    the slot is 128 pages of 16 KiB, read-only: its pages of zeroes show the zero block, the
 //           others a compact block that holds only them (a written slot with many pages of zeroes);
 //           a write makes it whole again, and it waits longer each time before it may be Fine again
+//   Out     the slot's 2 MiB are in the swap file on the SSD and it shows the zero block with no
+//           access: a read or a write faults, the fault reads the slot back into a block of its own
+//           (about 1-2 ms) and the access repeats (the SSD swap, below)
 //
 // A write to a Zero or Shared slot faults; HandleGuestWriteFault gives the slot a block of its
 // own (zeroed, or a copy) and the write repeats. So memory is no longer taken when the guest's
@@ -23,7 +26,7 @@
 // 64-bit games only: a 32-bit game's fastmem window aliases the backing, which takes it whole.
 
 namespace {
-enum : std::uint8_t { SlotZero = 0, SlotOwn = 1, SlotShared = 2, SlotFine = 3, SlotLock = 0x80, SlotMask = 0x7f };
+enum : std::uint8_t { SlotZero = 0, SlotOwn = 1, SlotShared = 2, SlotFine = 3, SlotOut = 4, SlotLock = 0x80, SlotMask = 0x7f };
 constexpr std::size_t FinePage = 16384, FinePages = SparseSlot / FinePage;
 // A written slot becomes Fine with at least this many pages of zeroes (512 KiB given back).
 constexpr std::size_t FineMinZeroPages = 32;
@@ -44,13 +47,15 @@ struct Counters {
     std::atomic<std::uint64_t> returns_clear{0}, returns_free{0}, returns_scan{0}, dedup{0};
     std::atomic<std::uint64_t> reserve_used{0}, host_reserve_used{0}, failures{0}, passes{0}, scan_ns{0};
     std::atomic<std::uint64_t> fined{0}, unfined{0}, fine_failures{0};
+    std::atomic<std::uint64_t> swap_outs{0}, swap_ins{0}, swap_failures{0}, swap_in_us{0};
 };
 Counters counters;
 void ResetCounters() noexcept {
     for (auto* counter : {&counters.faults, &counters.promotions, &counters.copies, &counters.waits,
                           &counters.returns_clear, &counters.returns_free, &counters.returns_scan, &counters.dedup,
                           &counters.reserve_used, &counters.host_reserve_used, &counters.failures, &counters.passes, &counters.scan_ns,
-                          &counters.fined, &counters.unfined, &counters.fine_failures})
+                          &counters.fined, &counters.unfined, &counters.fine_failures,
+                          &counters.swap_outs, &counters.swap_ins, &counters.swap_failures, &counters.swap_in_us})
         counter->store(0, std::memory_order_relaxed);
 }
 
@@ -186,6 +191,53 @@ int UnshareBlock(std::int64_t physical) noexcept {
     return left;
 }
 
+// ---- The SSD swap: what holds the swap file's entries ----
+//
+// The PS5 gives apps no swap, so the service makes one for the guest's memory, which is most of
+// what a large game holds (Mario Kart World: 4.0 GiB, 5.9 in a race, of a 12 GiB pool it shares
+// with the GPU). Only while the pool is short (the graphics caches say so, a write waits for a
+// block, or the reserve cannot be refilled) does the keeper (every 100 ms) write slots out, at
+// most 16 a pass. It takes slots the graphics caches called cold whole: the memory of textures
+// they uploaded (HostMemory::HintCold), which the GPU now has its own copy of and the game rarely
+// reads again. A slot read back waits 4, 8 ... 256 s before it may go out again, and its hints
+// count again from nothing. headless/main.cpp names the file (EDEN_GUEST_SWAP_FILE) and its size
+// (EDEN_GUEST_SWAP_MIB, 4096 by default); testing switch "SSD swap" (EDEN_GUEST_SWAP=0: off).
+constexpr std::size_t SwapMostSlots = 8192; // 16 GiB
+constexpr unsigned SwapPerPass = 16;
+int swap_fd = -1;
+std::size_t swap_slots = 0;
+std::uint64_t swap_used[SwapMostSlots / 64];
+std::atomic_flag swap_lock = ATOMIC_FLAG_INIT;
+std::atomic<std::uint32_t> swap_tick{0};
+std::atomic<bool> pool_short{false};
+char swap_path[256];
+
+void Fence(std::uintptr_t at) noexcept;   // the scanner's, below
+void Unfence(std::uintptr_t at) noexcept;
+
+std::int64_t TakeSwapEntry() noexcept {
+    std::int64_t entry = -1;
+    while (swap_lock.test_and_set(std::memory_order_acquire)) sched_yield();
+    for (std::size_t word = 0; word * 64 < swap_slots && entry < 0; ++word) {
+        if (swap_used[word] == ~std::uint64_t{0}) continue;
+        for (std::size_t bit = 0; bit < 64 && word * 64 + bit < swap_slots; ++bit) {
+            if (!(swap_used[word] & (std::uint64_t{1} << bit))) {
+                swap_used[word] |= std::uint64_t{1} << bit;
+                entry = static_cast<std::int64_t>(word * 64 + bit);
+                break;
+            }
+        }
+    }
+    swap_lock.clear(std::memory_order_release);
+    return entry;
+}
+void FreeSwapEntry(std::int64_t entry) noexcept {
+    if (entry < 0 || static_cast<std::size_t>(entry) >= SwapMostSlots) return;
+    while (swap_lock.test_and_set(std::memory_order_acquire)) sched_yield();
+    swap_used[entry / 64] &= ~(std::uint64_t{1} << (entry % 64));
+    swap_lock.clear(std::memory_order_release);
+}
+
 // ---- The changes of a slot (the slot is locked) ----
 
 // Zero -> Own: a zeroed block of its own, read-write.
@@ -252,6 +304,17 @@ bool PromoteShared(SparseRange& range, std::size_t slot) noexcept {
 void ReturnSlot(SparseRange& range, std::size_t slot) noexcept {
     const std::uintptr_t at = SlotAddress(range, slot);
     const std::uint8_t state = SlotState(range, slot);
+    if (state == SlotOut) {
+        // In the swap file and holding no block: its entry is free again.
+#ifdef PS5_NATIVE
+        if (!MapSlot(at, PROT_READ, zero_block)) std::abort();
+#else
+        if (mprotect(reinterpret_cast<void*>(at), SparseSlot, PROT_READ) != 0) std::abort();
+#endif
+        FreeSwapEntry(range.physical[slot]);
+        range.physical[slot] = -1;
+        return;
+    }
     if (state == SlotFine) {
         const std::size_t kept = FineKept(range, slot);
 #ifdef PS5_NATIVE
@@ -335,6 +398,104 @@ bool PromoteFine(SparseRange& range, std::size_t slot) noexcept {
     return true;
 }
 
+// Out -> Own: the slot's bytes come back from the swap file into a block of its own.
+bool SwapIn(SparseRange& range, std::size_t slot) noexcept {
+#ifdef PS5_NATIVE
+    const std::uintptr_t at = SlotAddress(range, slot);
+    const std::int64_t entry = range.physical[slot];
+    if (swap_fd < 0 || entry < 0) return false;
+    std::int64_t physical = -1;
+    if (eden_direct_low(SparseSlot, SparseSlot, 12, &physical) != 0 && !ReserveBlock(&physical)) return false;
+    void* view = reinterpret_cast<void*>(cpu_mapping_hint);
+    if (sceKernelMapDirectMemory(&view, SparseSlot, PROT_READ | PROT_WRITE, 0, physical, SparseSlot) != 0) {
+        (void)sceKernelReleaseDirectMemory(physical, SparseSlot);
+        return false;
+    }
+    timespec begin{}, end{};
+    clock_gettime(CLOCK_MONOTONIC, &begin);
+    std::size_t done = 0;
+    while (done < SparseSlot) {
+        const ssize_t got = pread(swap_fd, static_cast<std::uint8_t*>(view) + done, SparseSlot - done,
+                                  static_cast<off_t>(entry * static_cast<std::int64_t>(SparseSlot) + static_cast<std::int64_t>(done)));
+        if (got < 0 && errno == EINTR) continue;
+        if (got <= 0) break;
+        done += static_cast<std::size_t>(got);
+    }
+    if (done != SparseSlot) {
+        // The game's memory cannot be read back: nothing can go on without it.
+        Note("EDEN_SWAP a slot of the guest's memory could not be read back from the SSD\n");
+        std::abort();
+    }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    if (munmap(view, SparseSlot) != 0) std::abort();
+    if (!MapSlot(at, PROT_READ | PROT_WRITE, physical)) {
+        (void)sceKernelReleaseDirectMemory(physical, SparseSlot);
+        return false;
+    }
+    range.physical[slot] = physical;
+    FreeSwapEntry(entry);
+    guest_committed.fetch_add(SparseSlot, std::memory_order_relaxed);
+    counters.swap_ins.fetch_add(1, std::memory_order_relaxed);
+    counters.swap_in_us.fetch_add(static_cast<std::uint64_t>((end.tv_sec - begin.tv_sec) * 1000000LL +
+                                                             (end.tv_nsec - begin.tv_nsec) / 1000),
+                                  std::memory_order_relaxed);
+    // Each time it comes back it stays longer: 4, 8 ... 256 s (times in bits 12-15 of fine[]).
+    const unsigned times = std::min<unsigned>(((range.fine[slot] >> 12) & 0xf) + 1, 6);
+    range.fine[slot] = static_cast<std::uint16_t>((range.fine[slot] & 0x0fff) | (times << 12));
+    range.swap_after[slot] = swap_tick.load(std::memory_order_relaxed) + (20u << times);
+    __atomic_store_n(&range.cold[slot], 0u, __ATOMIC_RELAXED);
+    return true;
+#else
+    (void)range;
+    (void)slot;
+    return false;
+#endif
+}
+
+// Own -> Out: the slot's bytes go to the swap file and its block back to the pool. Fenced while
+// they are written: a writer faults and waits for the lock, a reader reads them meanwhile.
+bool SwapOut(SparseRange& range, std::size_t slot) noexcept {
+#ifdef PS5_NATIVE
+    if (swap_fd < 0) return false;
+    const std::int64_t entry = TakeSwapEntry();
+    if (entry < 0) return false;
+    const std::uintptr_t at = SlotAddress(range, slot);
+    Fence(at);
+    std::size_t done = 0;
+    while (done < SparseSlot) {
+        const ssize_t put = pwrite(swap_fd, reinterpret_cast<const std::uint8_t*>(at) + done, SparseSlot - done,
+                                   static_cast<off_t>(entry * static_cast<std::int64_t>(SparseSlot) + static_cast<std::int64_t>(done)));
+        if (put < 0 && errno == EINTR) continue;
+        if (put <= 0) break;
+        done += static_cast<std::size_t>(put);
+    }
+    bool hidden = done == SparseSlot && MapSlot(at, PROT_NONE, zero_block);
+    if (done == SparseSlot && !hidden) {
+        // No mapping without access to the zero block: the address space alone, reserved again.
+        void* again = reinterpret_cast<void*>(at);
+        hidden = munmap(again, SparseSlot) == 0 &&
+                 sceKernelReserveVirtualRange(&again, SparseSlot, MAP_FIXED, SparseSlot) == 0 &&
+                 again == reinterpret_cast<void*>(at);
+        if (!hidden && !MapSlot(at, PROT_READ, range.physical[slot])) std::abort();
+    }
+    if (!hidden) {
+        Unfence(at);
+        FreeSwapEntry(entry);
+        counters.swap_failures.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    if (sceKernelReleaseDirectMemory(range.physical[slot], SparseSlot) != 0) std::abort();
+    range.physical[slot] = entry;
+    guest_committed.fetch_sub(SparseSlot, std::memory_order_relaxed);
+    counters.swap_outs.fetch_add(1, std::memory_order_relaxed);
+    return true;
+#else
+    (void)range;
+    (void)slot;
+    return false;
+#endif
+}
+
 #ifdef PS5_NATIVE
 bool MapRun(std::uintptr_t at, std::size_t bytes, std::int64_t physical) noexcept {
     void* address = reinterpret_cast<void*>(at);
@@ -400,8 +561,11 @@ bool MakeFine(SparseRange& range, std::size_t slot, const bool (&zero)[FinePages
 bool ServiceCommit(SparseRange& range, std::size_t slot) noexcept {
     LockSlot(range, slot);
     const std::uint8_t state = SlotState(range, slot);
-    const bool ok = state == SlotZero ? PromoteZero(range, slot) : state == SlotFine ? PromoteFine(range, slot) : true;
-    UnlockSlot(range, slot, ok && (state == SlotZero || state == SlotFine) ? SlotOwn : state);
+    const bool ok = state == SlotZero   ? PromoteZero(range, slot)
+                    : state == SlotFine ? PromoteFine(range, slot)
+                    : state == SlotOut  ? SwapIn(range, slot)
+                                        : true;
+    UnlockSlot(range, slot, ok && (state == SlotZero || state == SlotFine || state == SlotOut) ? SlotOwn : state);
     return ok;
 }
 
@@ -638,6 +802,8 @@ bool HandleGuestWriteFault(void* fault) noexcept {
             }
         } else if (state == SlotShared) {
             done = PromoteShared(*range, slot);
+        } else if (state == SlotOut) {
+            done = SwapIn(*range, slot);
         }
         return done;
     };
@@ -714,13 +880,19 @@ bool AddStates(SparseRange& range) noexcept {
     auto* state = new (std::nothrow) std::atomic<std::uint8_t>[slots];
     auto* fine = state ? new (std::nothrow) std::uint16_t[slots]() : nullptr;
     auto* fine_after = fine ? new (std::nothrow) std::uint32_t[slots]() : nullptr;
-    if (fine_after == nullptr) {
+    auto* cold = fine_after ? new (std::nothrow) std::uint32_t[slots]() : nullptr;
+    auto* swap_after = cold ? new (std::nothrow) std::uint32_t[slots]() : nullptr;
+    if (swap_after == nullptr) {
         delete[] state;
         delete[] fine;
+        delete[] fine_after;
+        delete[] cold;
         return false;
     }
     range.fine = fine;
     range.fine_after = fine_after;
+    range.cold = cold;
+    range.swap_after = swap_after;
     for (std::size_t slot = 0; slot < slots; ++slot)
         state[slot].store(range.owned[slot].load(std::memory_order_relaxed) ? SlotOwn : SlotZero, std::memory_order_relaxed);
     range.state = state;
@@ -737,6 +909,32 @@ bool scanner_stop = false;
 // soon as the caches have given memory back (the scanner only passes every 20 s).
 std::thread keeper;
 
+// While the pool is short: up to SwapPerPass cold Own slots to the swap file (see the SSD swap).
+void SwapSome() noexcept {
+    const std::uint32_t tick = swap_tick.fetch_add(1, std::memory_order_relaxed) + 1;
+    SparseRange* const range = service_range.load(std::memory_order_acquire);
+    if (range == nullptr || range->cold == nullptr || swap_fd < 0) return;
+    const bool short_now = pool_short.load(std::memory_order_relaxed) ||
+                           memory_waiters.load(std::memory_order_acquire) != 0 ||
+                           reserve_count.load(std::memory_order_relaxed) < ReserveBlocks;
+    if (!short_now) return;
+    const std::size_t slots = (range->end - range->begin.load(std::memory_order_relaxed)) / SparseSlot;
+    static std::size_t cursor = 0;
+    unsigned out = 0;
+    for (std::size_t looked = 0; looked < slots && out < SwapPerPass; ++looked) {
+        const std::size_t slot = cursor++ % slots;
+        if (SlotState(*range, slot) != SlotOwn || range->swap_after[slot] > tick ||
+            __atomic_load_n(&range->cold[slot], __ATOMIC_RELAXED) < SparseSlot * 3 / 4)
+            continue;
+        LockSlot(*range, slot);
+        const std::uint8_t state = SlotState(*range, slot);
+        const bool gone = state == SlotOwn && SwapOut(*range, slot);
+        __atomic_store_n(&range->cold[slot], 0u, __ATOMIC_RELAXED);
+        UnlockSlot(*range, slot, gone ? SlotOut : state);
+        out += gone;
+    }
+}
+
 void ReserveKeeper() {
     std::unique_lock lock{scanner_mutex};
     while (!scanner_stop) {
@@ -744,6 +942,7 @@ void ReserveKeeper() {
         if (scanner_stop) break;
         lock.unlock();
         FillReserve();
+        SwapSome();
         lock.lock();
     }
 }
@@ -905,11 +1104,12 @@ void ScanPass(SparseRange& range) noexcept {
 
 void ServiceReport(SparseRange& range, const char* when) noexcept {
     const std::size_t slots = (range.end - range.begin.load(std::memory_order_relaxed)) / SparseSlot;
-    std::size_t own = 0, shared = 0, fine = 0, fine_kept = 0;
+    std::size_t own = 0, shared = 0, fine = 0, fine_kept = 0, out = 0;
     for (std::size_t slot = 0; slot < slots; ++slot) {
         const auto state = SlotState(range, slot);
         own += state == SlotOwn;
         shared += state == SlotShared;
+        out += state == SlotOut;
         if (state == SlotFine) {
             ++fine;
             fine_kept += FineKept(range, slot);
@@ -921,7 +1121,7 @@ void ServiceReport(SparseRange& range, const char* when) noexcept {
         "returns_clear=%llu returns_free=%llu returns_scan=%llu dedup=%llu reserve_used=%llu failures=%llu "
         "passes=%llu scan_ms=%llu fine=%zu fine_held=%zuMiB fined=%llu unfined=%llu fine_failures=%llu "
         "reserve=%zuMiB host_transferred=%lluMiB\n",
-        when, guest_committed.load(std::memory_order_relaxed) >> 20, own, shared, slots - own - shared - fine,
+        when, guest_committed.load(std::memory_order_relaxed) >> 20, own, shared, slots - own - shared - fine - out,
         (unsigned long long)counters.faults.load(), (unsigned long long)counters.promotions.load(),
         (unsigned long long)counters.copies.load(), (unsigned long long)counters.waits.load(),
         (unsigned long long)counters.returns_clear.load(), (unsigned long long)counters.returns_free.load(),
@@ -933,6 +1133,15 @@ void ServiceReport(SparseRange& range, const char* when) noexcept {
         reserve_count.load(std::memory_order_relaxed) * (SparseSlot >> 20),
         (unsigned long long)counters.host_reserve_used.load() * (SparseSlot >> 20));
     if (length > 0) Report(line);
+    if (swap_fd >= 0 || counters.swap_outs.load(std::memory_order_relaxed) != 0) {
+        const auto ins = counters.swap_ins.load(std::memory_order_relaxed);
+        const int swap_length = std::snprintf(line, sizeof(line),
+            "EDEN_SWAP %s on the SSD=%zuMiB out=%llu in=%llu failures=%llu read_back_ms_each=%.2f\n", when,
+            out * (SparseSlot >> 20), (unsigned long long)counters.swap_outs.load(), (unsigned long long)ins,
+            (unsigned long long)counters.swap_failures.load(),
+            ins ? counters.swap_in_us.load() / 1000.0 / static_cast<double>(ins) : 0.0);
+        if (swap_length > 0) Report(line);
+    }
     // Who wrote the slots that were promoted: the largest places (offsets in the app's image).
     struct Top { const WriterSite* site; std::uint64_t count; } top[10]{};
     for (const WriterSite& site : writer_sites) {
@@ -1139,6 +1348,25 @@ void ServiceStart(SparseRange& range) noexcept {
     range.promote = true;
 #ifdef PS5_NATIVE
     FillReserve(ReserveAtStart);
+    // The SSD swap's file (headless/main.cpp names it; none: no swap).
+    swap_fd = -1;
+    swap_slots = 0;
+    swap_path[0] = 0;
+    std::memset(swap_used, 0, sizeof(swap_used));
+    if (const char* path = std::getenv("EDEN_GUEST_SWAP_FILE"); path != nullptr && path[0] != 0 &&
+                                                               std::strlen(path) < sizeof(swap_path)) {
+        const char* size = std::getenv("EDEN_GUEST_SWAP_MIB");
+        const unsigned long mib = std::clamp<unsigned long>(size ? std::strtoul(size, nullptr, 10) : 4096, 256,
+                                                            SwapMostSlots * (SparseSlot >> 20));
+        std::strcpy(swap_path, path);
+        swap_fd = open(swap_path, O_RDWR | O_CREAT | O_TRUNC, 0600);
+        swap_slots = swap_fd >= 0 ? mib / (SparseSlot >> 20) : 0;
+        char note[384];
+        const int length = swap_fd >= 0
+            ? std::snprintf(note, sizeof(note), "EDEN_SWAP on: %s, up to %lu MiB\n", swap_path, mib)
+            : std::snprintf(note, sizeof(note), "EDEN_SWAP off: %s could not be opened (errno %d)\n", swap_path, errno);
+        if (length > 0) Report(note);
+    }
 #endif
     service_range.store(&range, std::memory_order_release);
     Eden::Fastmem::guest_write_fault.store(&HandleGuestWriteFault, std::memory_order_release);
@@ -1174,6 +1402,12 @@ void ServiceStop(SparseRange& range) noexcept {
     service_range.store(nullptr, std::memory_order_release);
 #ifdef PS5_NATIVE
     EmptyReserve();
+    // The guest's memory goes right after this (ReleaseSparse): its slots in the file with it.
+    if (swap_fd >= 0) {
+        (void)close(swap_fd);
+        swap_fd = -1;
+        if (swap_path[0] != 0) (void)unlink(swap_path);
+    }
 #endif
 }
 
@@ -1297,4 +1531,29 @@ int GuestMemorySlotState(std::uint64_t offset) noexcept {
     SparseRange* const range = guest_range.load(std::memory_order_acquire);
     if (range == nullptr || range->state == nullptr) return -1;
     return SlotState(*range, static_cast<std::size_t>(offset / SparseSlot));
+}
+
+// The graphics caches have a copy of [offset, offset + bytes) of the guest's memory and expect the
+// game to leave it alone (HostMemory::HintCold, src/host_memory.cpp): those slots may go to the SSD
+// while the pool is short (the SSD swap). Counted per slot, at most a slot's size.
+void GuestMemoryCold(std::uint64_t offset, std::size_t bytes) noexcept {
+    SparseRange* const range = service_range.load(std::memory_order_acquire);
+    if (range == nullptr || range->cold == nullptr || bytes == 0) return;
+    const std::size_t slots = (range->end - range->begin.load(std::memory_order_relaxed)) / SparseSlot;
+    const std::uint64_t end = offset + bytes;
+    for (std::uint64_t cursor = offset; cursor < end;) {
+        const std::size_t slot = static_cast<std::size_t>(cursor / SparseSlot);
+        if (slot >= slots) break;
+        const std::uint64_t piece_end = std::min<std::uint64_t>(end, (cursor / SparseSlot + 1) * SparseSlot);
+        const std::uint32_t before = __atomic_load_n(&range->cold[slot], __ATOMIC_RELAXED);
+        const std::uint64_t now = std::min<std::uint64_t>(SparseSlot, before + (piece_end - cursor));
+        __atomic_store_n(&range->cold[slot], static_cast<std::uint32_t>(now), __ATOMIC_RELAXED);
+        cursor = piece_end;
+    }
+}
+
+// Whether the pool the GPU shares is short (headless/performance.cpp, every 100 ms): the SSD swap
+// writes cold slots out only then.
+extern "C" void eden_guest_memory_short(int short_now) noexcept {
+    pool_short.store(short_now != 0, std::memory_order_relaxed);
 }

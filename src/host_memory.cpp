@@ -64,6 +64,7 @@ void FreeMemoryPages(void* base, size_t size) noexcept;
 void* AllocateGuestMemory(size_t size) noexcept;
 void* AllocateGuestMemoryWhereUsed(size_t size) noexcept;
 void ClearGuestMemory(std::uint8_t* at, std::uint64_t offset, std::size_t bytes, int fill) noexcept;
+void GuestMemoryCold(std::uint64_t offset, std::size_t bytes) noexcept;
 void FreeGuestMemory(void* base, size_t size) noexcept;
 #ifdef PS5_NATIVE
 std::int64_t DirectMemoryStart(const void* pointer) noexcept;
@@ -548,8 +549,12 @@ void HostMemory::MarkDirty(size_t, size_t) {}
 void HostMemory::ForgetContents() {}
 #endif
 #ifdef EDEN_HOST_MEMORY_COLD_HINT
-// Direct-memory backing cannot be paged out; retain its contents until the guest clears it.
-void HostMemory::HintCold(size_t, size_t, std::optional<size_t>) const {}
+// Direct-memory backing cannot be paged out by the system; the guest memory service's SSD swap can
+// (src/guest_memory_service.inc): the hint marks the slots it covers as candidates.
+void HostMemory::HintCold(size_t physical_offset, size_t length, std::optional<size_t>) const {
+    if (length != 0 && physical_offset <= backing_size && length <= backing_size - physical_offset)
+        GuestMemoryCold(physical_offset, length);
+}
 #endif
 // Eden asks for these while a page table uses VirtualBasePointer() as its fastmem arena. Without a window (the
 // window is off on the console) there is no arena to change: the page table, which Eden has already updated, is what

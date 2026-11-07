@@ -1,5 +1,5 @@
 diff --git a/src/video_core/gpu_split.cpp b/src/video_core/gpu_split.cpp
-index 07ac984222..57a6431093 100644
+index c462278407..0c22cc890e 100644
 --- a/src/video_core/gpu_split.cpp
 +++ b/src/video_core/gpu_split.cpp
 @@ -2,6 +2,7 @@
@@ -10,7 +10,7 @@ index 07ac984222..57a6431093 100644
  #include <cstdlib>
  #include <thread>
  
-@@ -129,7 +130,7 @@ void GpuSplit::Stop() {
+@@ -153,7 +154,7 @@ void GpuSplit::Stop() {
      }
      back_thread.request_stop();
      wake.fetch_add(1, std::memory_order_seq_cst);
@@ -19,7 +19,7 @@ index 07ac984222..57a6431093 100644
      back_thread.join();
      active = false;
      // The split is static and outlives the emulation session. The next session's back thread
-@@ -179,6 +180,11 @@ void GpuSplit::WaitForSpace(size_t words) {
+@@ -203,6 +204,11 @@ void GpuSplit::WaitForSpace(size_t words) {
              Pause();
          } else {
              std::this_thread::yield();
@@ -31,7 +31,7 @@ index 07ac984222..57a6431093 100644
          }
      }
  }
-@@ -192,7 +198,9 @@ void GpuSplit::Publish() {
+@@ -216,7 +222,9 @@ void GpuSplit::Publish() {
      published.store(write_position, std::memory_order_seq_cst);
      if (back_waiting.load(std::memory_order_seq_cst)) {
          wake.fetch_add(1, std::memory_order_seq_cst);
@@ -42,7 +42,7 @@ index 07ac984222..57a6431093 100644
      }
  }
  
-@@ -203,6 +211,7 @@ void GpuSplit::Drain() {
+@@ -227,6 +235,7 @@ void GpuSplit::Drain() {
      }
      Publish();
      Nx2Profile::Scope scope{Nx2Profile::Zone::SplitDrain};
@@ -50,7 +50,7 @@ index 07ac984222..57a6431093 100644
      // Everything consumed is not enough: the back submits deferred work (Scheduler::DeferFlush)
      // from its idle hook afterwards, and the caller may use the scheduler once this returns.
      bool hook_asked = false;
-@@ -222,6 +231,21 @@ void GpuSplit::Drain() {
+@@ -246,6 +255,21 @@ void GpuSplit::Drain() {
              Pause();
          } else {
              std::this_thread::yield();
@@ -73,7 +73,7 @@ index 07ac984222..57a6431093 100644
      }
  }
 diff --git a/src/video_core/gpu_split.h b/src/video_core/gpu_split.h
-index 836c46c795..7280dd2272 100644
+index c0d4badccd..0a03369c8e 100644
 --- a/src/video_core/gpu_split.h
 +++ b/src/video_core/gpu_split.h
 @@ -72,7 +72,7 @@ public:

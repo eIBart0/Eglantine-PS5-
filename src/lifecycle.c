@@ -31,6 +31,17 @@ int eden_restart_app(void) {
     sceKernelDebugOutText(0, marker);
     return refused;
 }
+// The same with launch arguments for the new process (NULL-terminated, as main's argv receives
+// them): a game the launcher chose starts in a process the launcher never ran in
+// (headless/main.cpp). Returns only when the system refuses.
+int eden_restart_app_with(const char **args) {
+    char marker[96];
+    sceKernelDebugOutText(0, "EDEN_PPSA99121_RESTART_WITH_ARGUMENTS\n");
+    const int refused = sceSystemServiceLoadExec("/app0/eboot.bin", args);
+    snprintf(marker, sizeof(marker), "EDEN_PPSA99121_RESTART_REFUSED rc=%x\n", (unsigned)refused);
+    sceKernelDebugOutText(0, marker);
+    return refused;
+}
 // End the app the way a return from main does, from any thread. Returns only when refused.
 int eden_exit_app(void) {
     char marker[96];

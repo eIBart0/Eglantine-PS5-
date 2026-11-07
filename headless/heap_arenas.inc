@@ -1197,7 +1197,31 @@ static void *eden_heap_allocate(size_t count, size_t size, int zero) {
   return zero ? eden_heap_main(EDEN_HEAP_CALLOC, count, size) : eden_heap_main(EDEN_HEAP_MALLOC, bytes, 0);
 }
 
+/* mimalloc during a game's session (headless/mimalloc_heap.c): new blocks come from it once it
+ * is active, a block is freed or resized by whichever allocator owns its address, and a request
+ * mimalloc has no memory for comes from the heap below. */
+/* Weak: the host check of this heap (tools/check-heap-growth.py) is built without it. */
+extern atomic_int eden_mi_active __attribute__((weak));
+int eden_mi_owns(const void *address) __attribute__((weak));
+void *eden_mi_malloc(size_t size) __attribute__((weak));
+void *eden_mi_calloc(size_t count, size_t size) __attribute__((weak));
+void *eden_mi_realloc(void *address, size_t size) __attribute__((weak));
+void eden_mi_free(void *address) __attribute__((weak));
+int eden_mi_posix_memalign(void **address, size_t alignment, size_t size) __attribute__((weak));
+size_t eden_mi_usable_size(const void *address) __attribute__((weak));
+static inline int eden_mi_on(void) {
+  return &eden_mi_active != NULL && atomic_load_explicit(&eden_mi_active, memory_order_acquire);
+}
+static inline int eden_mi_has(const void *address) {
+  return eden_mi_owns != NULL && eden_mi_owns(address);
+}
+
 void *__wrap_malloc(size_t size) {
+  if (eden_mi_on()) {
+    void *block = eden_mi_malloc(size);
+    if (block != NULL)
+      return block;
+  }
   if (!ps5_heap_ready())
     return __real_malloc(size);
   void *cached = eden_tcache_take(size);
@@ -1207,6 +1231,11 @@ void *__wrap_malloc(size_t size) {
 }
 
 void *__wrap_calloc(size_t count, size_t size) {
+  if (eden_mi_on()) {
+    void *block = eden_mi_calloc(count, size);
+    if (block != NULL)
+      return block;
+  }
   if (!ps5_heap_ready())
     return __real_calloc(count, size);
   if (size != 0 && count > (size_t)-1 / size) {
@@ -1280,6 +1309,20 @@ static void *eden_realloc_inner(void *address, size_t size) {
 void *__wrap_realloc(void *address, size_t size) {
   if (address == NULL)
     return __wrap_malloc(size);
+  if (eden_mi_has(address)) {
+    void *result = eden_mi_realloc(address, size);
+    if (result != NULL || size == 0)
+      return result;
+    /* mimalloc has no memory for the larger block: the heap's spaces may. */
+    void *moved = eden_heap_allocate(1, size, 0);
+    if (moved == NULL)
+      return NULL;
+    const size_t before = eden_mi_usable_size(address);
+    memcpy(moved, address, before < size ? before : size);
+    eden_heap_record(moved, size);
+    eden_mi_free(address);
+    return moved;
+  }
   if (ps5_heap_owns(address))
     eden_site_free(address, eden_heap_usable(address));
   void *result = eden_realloc_inner(address, size);
@@ -1288,6 +1331,10 @@ void *__wrap_realloc(void *address, size_t size) {
 }
 
 void __wrap_free(void *address) {
+  if (eden_mi_has(address)) {
+    eden_mi_free(address);
+    return;
+  }
   if (eden_heap_in_range(address)) {
     const size_t usable = sceLibcMspaceMallocUsableSize(address);
     eden_site_free(address, usable);
@@ -1308,6 +1355,9 @@ void __wrap_free(void *address) {
 }
 
 int __wrap_posix_memalign(void **address, size_t alignment, size_t size) {
+  if (eden_mi_on() && alignment >= sizeof(void *) && (alignment & (alignment - 1)) == 0 &&
+      eden_mi_posix_memalign(address, alignment, size) == 0)
+    return 0;
   if (!ps5_heap_ready())
     return __real_posix_memalign(address, alignment, size);
   /* An alignment no space accepts must not make the heap grow looking for one that does. */
@@ -1342,6 +1392,8 @@ int __wrap_posix_memalign(void **address, size_t alignment, size_t size) {
 }
 
 size_t __wrap_malloc_usable_size(const void *address) {
+  if (eden_mi_has(address))
+    return eden_mi_usable_size(address);
   return ps5_heap_owns(address) ? eden_heap_usable(address) : __real_malloc_usable_size(address);
 }
 

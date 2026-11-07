@@ -1,5 +1,5 @@
 diff --git a/src/core/core.cpp b/src/core/core.cpp
-index 3842ee25a8..b791bf28d5 100644
+index 6e82eeecc7..71e57ab5fa 100644
 --- a/src/core/core.cpp
 +++ b/src/core/core.cpp
 @@ -4,7 +4,10 @@
@@ -13,7 +13,7 @@ index 3842ee25a8..b791bf28d5 100644
  #include <utility>
  
  #include "game_settings.h"
-@@ -257,6 +260,35 @@ struct System::Impl {
+@@ -275,6 +278,35 @@ struct System::Impl {
          kernel.SuspendEmulation(false);
          core_timing.SyncPause(false);
          is_paused.store(false, std::memory_order_relaxed);
@@ -49,7 +49,7 @@ index 3842ee25a8..b791bf28d5 100644
      }
  
      void Pause() {
-@@ -579,6 +611,7 @@ struct System::Impl {
+@@ -611,6 +643,7 @@ struct System::Impl {
      mutable std::mutex suspend_guard;
      std::mutex general_channel_mutex;
      std::atomic_bool is_paused{};

@@ -167,29 +167,79 @@ std::atomic<bool> placement_secondary{false};
 std::atomic<unsigned> secondary_reports{};
 void CheckWorkerTopology() {
     cpuset_t original{};
-    if (__get_cpuid_max(0, nullptr) < 0xb ||
-        cpuset_getaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, 8, &original)) return;
-    std::array<unsigned, 5> cores{};
-    unsigned count = 0;
+    if (cpuset_getaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, 8, &original)) return;
+    // EDEN_PS5_PLACEMENT=0 (testing switch "Thread placement"): no pinning, as before 01.219.021.
+    if (const char* value = std::getenv("EDEN_PS5_PLACEMENT"); value != nullptr && value[0] == '0') {
+        std::printf("EDEN_WORKER_TOPOLOGY ready=0 off by EDEN_PS5_PLACEMENT=0\n");
+        return;
+    }
+    // Each allowed CPU's physical core, three ways: the x2APIC ID above the SMT shift (leaf 0xB),
+    // AMD's core ID (leaf 0x8000001E), and, when neither tells cores apart, the order the kernel
+    // numbers CPUs in (APIC order: a core's two threads are CPUs 2n and 2n+1). On the console leaf
+    // 0xB gave every CPU the same core (01.219.019 logs: distinct_cores=1), so nothing was pinned.
+    const bool leaf_b = __get_cpuid_max(0, nullptr) >= 0xb;
+    const bool leaf_1e = __get_cpuid_max(0x80000000, nullptr) >= 0x8000001e;
+    std::array<int, 64> by_b{}, by_1e{};
+    by_b.fill(-1);
+    by_1e.fill(-1);
     bool changed = false;
+    unsigned reported = 0;
     for (unsigned cpu = 0; cpu < 64; ++cpu) {
         if (!CPU_ISSET(cpu, &original)) continue;
         cpuset_t one{};
         CPU_SET(cpu, &one);
         if (cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, 8, &one)) break;
         changed = true;
-        unsigned a, b, c, d;
-        __cpuid_count(0xb, 0, a, b, c, d);
-        // Architectural SMT level: x2APIC ID above the SMT shift identifies
-        // the physical core. Do not assume OS CPU numbering matches APIC IDs.
-        if (!b || ((c >> 8) & 0xff) != 1 || (a & 31) >= 16) break;
-        const unsigned core = d >> (a & 31);
-        cpu_core[cpu] = static_cast<int>(core);
-        if (count == cores.size() ||
-            std::find(cores.begin(), cores.begin() + count, core) != cores.begin() + count) continue;
+        sched_yield(); // run on that CPU before asking it
+        unsigned a = 0, b = 0, c = 0, d = 0;
+        unsigned shift = 0, x2apic = 0, core_1e = 0, apic_1e = 0, aux = 0;
+        if (leaf_b) {
+            __cpuid_count(0xb, 0, a, b, c, d);
+            shift = a & 31;
+            x2apic = d;
+            // Architectural SMT level: the x2APIC ID above the SMT shift is the physical core.
+            if (b && ((c >> 8) & 0xff) == 1 && shift < 16) by_b[cpu] = static_cast<int>(d >> shift);
+        }
+        if (leaf_1e) {
+            __cpuid(0x8000001e, a, b, c, d);
+            apic_1e = a;
+            core_1e = b & 0xff;
+            by_1e[cpu] = static_cast<int>(core_1e);
+        }
+        __builtin_ia32_rdtscp(&aux); // TSC_AUX: the CPU number, where the kernel keeps it there
+        if (reported++ < 16)
+            std::printf("EDEN_WORKER_CPU cpu=%u aux=%u x2apic=%u shift=%u apic_1e=%u core_1e=%u\n", cpu, aux,
+                        x2apic, shift, apic_1e, core_1e);
+    }
+    const auto distinct = [&](const std::array<int, 64>& map) {
+        std::array<int, 64> seen{};
+        unsigned n = 0;
+        for (unsigned cpu = 0; cpu < 64; ++cpu) {
+            if (!CPU_ISSET(cpu, &original) || map[cpu] < 0) continue;
+            if (std::find(seen.begin(), seen.begin() + n, map[cpu]) == seen.begin() + n) seen[n++] = map[cpu];
+        }
+        return n;
+    };
+    const char* source = "x2apic";
+    if (distinct(by_b) >= 5) {
+        cpu_core = by_b;
+    } else if (distinct(by_1e) >= 5) {
+        cpu_core = by_1e;
+        source = "amd_core_id";
+    } else {
+        for (unsigned cpu = 0; cpu < 64; ++cpu) cpu_core[cpu] = CPU_ISSET(cpu, &original) ? static_cast<int>(cpu / 2) : -1;
+        source = "assumed_pairs";
+    }
+    std::array<unsigned, 5> cores{};
+    unsigned count = 0;
+    for (unsigned cpu = 0; cpu < 64 && count < cores.size(); ++cpu) {
+        if (!CPU_ISSET(cpu, &original) || cpu_core[cpu] < 0) continue;
+        const unsigned core = static_cast<unsigned>(cpu_core[cpu]);
+        if (std::find(cores.begin(), cores.begin() + count, core) != cores.begin() + count) continue;
         cores[count] = core;
         worker_cpus[count++] = cpu;
     }
+    std::printf("EDEN_WORKER_CORES source=%s by_x2apic=%u by_amd_core_id=%u\n", source, distinct(by_b), distinct(by_1e));
     if (changed) {
         cpuset_t restored{};
         if (cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, 8, &original) ||
@@ -391,6 +441,9 @@ extern "C" void eden_heap_usage(std::size_t* held, std::size_t* in_use, std::siz
 extern "C" void eden_heap_page_usage(std::size_t* free_pages, std::size_t* idle_arenas, std::size_t* live)
     __attribute__((weak));
 extern "C" unsigned eden_guest_memory_wanted(void) __attribute__((weak));
+extern "C" void eden_mi_usage(std::size_t* held, std::size_t* given_back, std::size_t* refused) __attribute__((weak));
+extern "C" void eden_mi_collect(void) __attribute__((weak));
+extern "C" void eden_guest_memory_short(int short_now) __attribute__((weak));
 extern "C" void eden_guest_memory_reserve(std::size_t* held, std::size_t* target) __attribute__((weak));
 #ifdef PS5_NATIVE
 extern "C" std::int64_t sceKernelGetDirectMemorySize();
@@ -402,6 +455,7 @@ extern "C" std::int32_t sceKernelDirectMemoryQuery(std::int64_t, int, DirectMemo
 #endif
 
 #ifdef PS5_NATIVE
+static void ReportThreadCpu();
 // The largest free block of direct memory is what the next graphics allocation needs. Looked at
 // again every 100 ms; called on the GPU thread by the texture collector (KeepDirtyTextures).
 static std::atomic<unsigned long long> largest_free_block{0};
@@ -420,6 +474,8 @@ static void RefreshFreeMemory() {
     const PoolView view = ViewOfPool(known, largest, held, target);
     largest_free_block.store(known ? (view.free != 0 ? view.free : 1) : 0, std::memory_order_relaxed);
     graphics_memory_short.store(view.short_memory, std::memory_order_relaxed);
+    // The guest memory service's SSD swap writes cold slots out only while the pool is short.
+    if (eden_guest_memory_short) eden_guest_memory_short(view.short_memory ? 1 : 0);
     // The pool, the guest's memory and the heap in stderr.log every 20 s, to see what holds it.
     static std::atomic<long long> summary_ns{0};
     if (now - summary_ns.load(std::memory_order_relaxed) >= 20'000'000'000) {
@@ -432,6 +488,7 @@ static void RefreshFreeMemory() {
                      largest >> 20, int(view.short_memory), guest_held >> 20,
                      kernel_memory ? kernel_memory() >> 20 : 0ULL);
         ReportHeap("every 20 s");
+        ReportThreadCpu();
     }
     // The heap's empty spaces go back to the pool while it is short (every 2 s at most).
     static std::atomic<long long> trimmed_ns{0};
@@ -493,9 +550,81 @@ void ReportHeap(const char* why) {
                      free_pages >> 20, idle_arenas >> 20, live >> 20);
     }
     if (eden_heap_sites_report) eden_heap_sites_report();
+    if (eden_mi_usage) {
+        std::size_t held = 0, given_back = 0, refused = 0;
+        eden_mi_usage(&held, &given_back, &refused);
+        if (held != 0 || given_back != 0)
+            std::fprintf(stderr, "EDEN_MIMALLOC holds %zu MiB of the pool; %zu MiB given back so far; %zu commits refused\n",
+                         held >> 20, given_back >> 20, refused);
+    }
 }
 
+#ifdef PS5_NATIVE
+extern "C" int sceKernelAvailableFlexibleMemorySize(std::size_t* size);
+#endif
+void ReportMemoryAt(const char* when) {
+#ifdef PS5_NATIVE
+    const std::int64_t total = sceKernelGetDirectMemorySize();
+    std::int64_t start = 0, taken = 0, offset = 0;
+    std::size_t largest = 0;
+    if (total > 0) (void)sceKernelAvailableDirectMemorySize(0, total, 0x4000, &start, &largest);
+    unsigned regions = 0;
+    DirectMemoryRegion region{};
+    while (total > 0 && offset < total && regions < 8192 &&
+           sceKernelDirectMemoryQuery(offset, 1, &region, sizeof(region)) == 0 && region.end > offset) {
+        taken += region.end - region.start;
+        offset = region.end;
+        ++regions;
+    }
+    std::size_t held = 0, in_use = 0, returned = 0;
+    if (eden_heap_usage) eden_heap_usage(&held, &in_use, &returned);
+    std::size_t guest_span = 0, guest_held = 0;
+    ::Common::GuestMemoryUsage(&guest_span, &guest_held);
+    std::size_t flexible = 0;
+    if (sceKernelAvailableFlexibleMemorySize(&flexible) != 0) flexible = 0;
+    std::fprintf(stderr,
+                 "EDEN_MEMORY_AT %s: pool %lld MiB, %lld MiB taken in %u regions, largest free block %zu MiB; "
+                 "heap holds %zu MiB (%zu in use); guest %zu MiB; flexible memory free %zu MiB\n",
+                 when, static_cast<long long>(total >> 20), static_cast<long long>(taken >> 20), regions,
+                 largest >> 20, held >> 20, in_use >> 20, guest_held >> 20, flexible >> 20);
+#else
+    (void)when;
+#endif
+}
+
+#ifdef PS5_NATIVE
+// CPU time of each placed thread since the last report, as a share of the interval (EDEN_THREAD_CPU,
+// every 20 s with the pool's summary): which of the guest cores and the GPU thread is the one that
+// holds a game back.
+static void ReportThreadCpu() {
+    static std::array<long long, names.size()> last_cpu{};
+    static long long last_mono = 0;
+    const long long mono = ClockNs(CLOCK_MONOTONIC);
+    const long long interval = last_mono != 0 ? mono - last_mono : 0;
+    std::string line = "EDEN_THREAD_CPU";
+    {
+        std::lock_guard lock(workers_mutex);
+        for (std::size_t i = 0; i < workers.size(); ++i) {
+            const auto& worker = workers[i];
+            if (!worker.registered || worker.clock_error) continue;
+            const long long cpu = ClockNs(worker.clock);
+            if (cpu < 0) continue;
+            if (interval > 0 && last_cpu[i] > 0) {
+                char item[64];
+                std::snprintf(item, sizeof(item), " %s=%lld%%", names[i],
+                              (cpu - last_cpu[i]) * 100 / interval);
+                line += item;
+            }
+            last_cpu[i] = cpu;
+        }
+    }
+    last_mono = mono;
+    if (interval > 0) std::fprintf(stderr, "%s\n", line.c_str());
+}
+#endif
+
 std::size_t TrimHeap(const char* why) {
+    if (eden_mi_collect) eden_mi_collect();
     if (!eden_heap_trim) return 0;
     const std::size_t returned = eden_heap_trim();
     if (returned != 0) {

@@ -1,8 +1,8 @@
 diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
-index 40158ef2a5..1cca17831e 100644
+index 76ac0ee4b6..10d1531542 100644
 --- a/src/video_core/buffer_cache/buffer_cache.h
 +++ b/src/video_core/buffer_cache/buffer_cache.h
-@@ -1600,9 +1600,16 @@ void BufferCache<P>::UpdateVertexBuffer(u32 index) {
+@@ -1728,9 +1728,16 @@ void BufferCache<P>::UpdateVertexBuffer(u32 index) {
      const auto& limit = maxwell3d->regs.vertex_stream_limits[index];
      const GPUVAddr gpu_addr_begin = array.Address();
      const bool native = maxwell3d->GetNativeMacroEngine().native_turing;

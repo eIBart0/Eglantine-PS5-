@@ -34,10 +34,10 @@ index e5c33d75d9..74525b3cca 100644
      enum class PushMode {
          Try,
 diff --git a/src/video_core/gpu_thread.cpp b/src/video_core/gpu_thread.cpp
-index 3af8cb65a8..7273c28f95 100644
+index 5e155ecfe2..096c52e938 100644
 --- a/src/video_core/gpu_thread.cpp
 +++ b/src/video_core/gpu_thread.cpp
-@@ -76,10 +76,14 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
+@@ -77,10 +77,14 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                      if (std::chrono::steady_clock::now() - last_progress <
                          std::chrono::microseconds{500}) {
                          std::this_thread::yield();

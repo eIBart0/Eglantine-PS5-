@@ -12,6 +12,16 @@
       "creates": ".deps/dav1d-54706fc6bc/meson.build"
     },
     {
+      "name": "mimalloc",
+      "about": "mimalloc v3.6.1 source (Microsoft Research, MIT licence): the app's allocator during a game's session (headless/mimalloc_heap.c)",
+      "kind": "archive",
+      "url": "https://github.com/microsoft/mimalloc/archive/56dc5eb80145f9a3ba7ca23d47c6a248b9d8586c.tar.gz",
+      "sha512": "60dd0c12ca9687ef04fccf009d4738004cd2099c289212379249dbf9e33f7da63c91038c9e8782fac6108ecb239685e6bd0d9906d3ecbc5b8d5bdd56cfc87d04",
+      "extract": ".deps/mimalloc-56dc5eb801",
+      "strip": 1,
+      "creates": ".deps/mimalloc-56dc5eb801/src/static.c"
+    },
+    {
       "name": "ffmpeg",
       "about": "FFmpeg source as pinned by Eden's cpmfile.json, built for the PS5 decoders",
       "kind": "archive",

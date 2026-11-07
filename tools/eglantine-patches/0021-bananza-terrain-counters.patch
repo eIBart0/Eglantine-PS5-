@@ -90,7 +90,7 @@ index 564220b71c..73abbf068b 100644
      }
  }
 diff --git a/src/video_core/macro.cpp b/src/video_core/macro.cpp
-index 94297e8fea..e18e6c5a7f 100644
+index 8f0f549835..fe2e708f9f 100644
 --- a/src/video_core/macro.cpp
 +++ b/src/video_core/macro.cpp
 @@ -26,6 +26,7 @@
@@ -101,7 +101,7 @@ index 94297e8fea..e18e6c5a7f 100644
  #include "video_core/engines/maxwell_3d.h"
  #include "video_core/engines/maxwell_3d.h"
  #include "video_core/dirty_flags.h"
-@@ -1343,11 +1344,87 @@ static void Dump(u64 hash, std::span<const u32> code, bool decompiled = false) {
+@@ -1344,11 +1345,87 @@ static void Dump(u64 hash, std::span<const u32> code, bool decompiled = false) {
      macro_file.write(reinterpret_cast<const char*>(code.data()), code.size_bytes());
  }
  

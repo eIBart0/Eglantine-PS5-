@@ -1,8 +1,8 @@
 diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
-index 33b9940e37..a9db3afa10 100644
+index 3c5248e217..ace728d908 100644
 --- a/src/video_core/buffer_cache/buffer_cache.h
 +++ b/src/video_core/buffer_cache/buffer_cache.h
-@@ -779,6 +779,14 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
+@@ -820,6 +820,14 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
      }
      Nx2Profile::Add(Nx2Profile::Counter::DownloadBytes, total_size_bytes);
      Nx2Profile::Add(Nx2Profile::Counter::DownloadCopies, downloads.size());
@@ -32,7 +32,7 @@ index 70c68343ce..4963ae3764 100644
  
  u64 BufferCacheRuntime::GetDeviceLocalMemory() const {
 diff --git a/src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp b/src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp
-index 2874c90218..4d5e795df5 100644
+index 98787b9add..e8db3c1a60 100644
 --- a/src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp
 +++ b/src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp
 @@ -121,7 +121,7 @@ StagingBufferRef StagingBufferPool::Request(size_t size, MemoryUsage usage, bool
@@ -54,7 +54,7 @@ index 2874c90218..4d5e795df5 100644
  }
  
 diff --git a/src/video_core/renderer_vulkan/vk_staging_buffer_pool.h b/src/video_core/renderer_vulkan/vk_staging_buffer_pool.h
-index 7df2c06a4f..4f05b7595b 100644
+index 6d967abb41..6bf8edbb2d 100644
 --- a/src/video_core/renderer_vulkan/vk_staging_buffer_pool.h
 +++ b/src/video_core/renderer_vulkan/vk_staging_buffer_pool.h
 @@ -38,7 +38,8 @@ public:

@@ -1,0 +1,178 @@
+diff --git a/src/video_core/renderer_vulkan/vk_update_descriptor.cpp b/src/video_core/renderer_vulkan/vk_update_descriptor.cpp
+index 29f3ee71a1..41b5e56eec 100644
+--- a/src/video_core/renderer_vulkan/vk_update_descriptor.cpp
++++ b/src/video_core/renderer_vulkan/vk_update_descriptor.cpp
+@@ -4,6 +4,7 @@
+ // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <algorithm>
+ #include <variant>
+ #include <boost/container/static_vector.hpp>
+ 
+@@ -19,21 +20,88 @@ namespace Vulkan {
+ UpdateDescriptorQueue::UpdateDescriptorQueue(const Device& device_, size_t frame_payload_size_,
+                                              bool supports_descriptor_buffer_)
+     : device{device_}, frame_payload_size{frame_payload_size_},
+-      supports_descriptor_buffer{supports_descriptor_buffer_},
+-      payload(std::make_unique_for_overwrite<DescriptorUpdateEntry[]>(frame_payload_size_ * FRAMES_IN_FLIGHT))
+-{
+-    payload_start = payload.get();
+-    payload_cursor = payload.get();
+-}
++      supports_descriptor_buffer{supports_descriptor_buffer_} {}
+ 
+ UpdateDescriptorQueue::~UpdateDescriptorQueue() = default;
+ 
++void UpdateDescriptorQueue::RecycleFrame(size_t frame) {
++    auto& blocks = frame_blocks[frame];
++    frame_blocks_peak[frame] = blocks.size();
++    for (auto& block : blocks) {
++        free_blocks.push_back(std::move(block));
++    }
++    blocks.clear();
++}
++
+ void UpdateDescriptorQueue::TickFrame() {
++    if (payload_cursor != nullptr) {
++        frame_used += static_cast<size_t>(payload_cursor - block_begin);
++    }
++    frame_used_peak = (std::max)(frame_used_peak, frame_used);
++    frame_used = 0;
++    frame_taken = 0;
+     if (++frame_index >= FRAMES_IN_FLIGHT) {
+         frame_index = 0;
+     }
+-    payload_start = payload.get() + frame_index * frame_payload_size;
+-    payload_cursor = payload_start;
++    // This slot's blocks were last used FRAMES_IN_FLIGHT frames ago.
++    RecycleFrame(frame_index);
++    // Keep free only as many blocks as the busiest of the last frames took: what a burst took
++    // beyond that goes back.
++    size_t keep = 0;
++    for (const size_t peak : frame_blocks_peak) {
++        keep = (std::max)(keep, peak);
++    }
++    while (free_blocks.size() > keep + 1) {
++        held_entries -= free_blocks.back().capacity;
++        free_blocks.pop_back();
++    }
++    payload_cursor = nullptr;
++    block_begin = nullptr;
++    block_end = nullptr;
++    if (++frames_reported >= 1800) {
++        LOG_INFO(Render_Vulkan,
++                 "Descriptor queue (at most {} entries a frame): {} entries at most in a frame "
++                 "over the last 1800, {} KiB held",
++                 frame_payload_size, frame_used_peak,
++                 held_entries * sizeof(DescriptorUpdateEntry) / 1024);
++        frames_reported = 0;
++        frame_used_peak = 0;
++    }
++}
++
++void UpdateDescriptorQueue::NextBlock(Scheduler& scheduler, size_t reserve) {
++    if (payload_cursor != nullptr) {
++        frame_used += static_cast<size_t>(payload_cursor - block_begin);
++    }
++    const size_t capacity = (std::max)(BLOCK_ENTRIES, reserve);
++    if (frame_taken + capacity > frame_payload_size) {
++        LOG_WARNING(Render_Vulkan, "Payload overflow (used={}, reserve={}, capacity={})",
++                    frame_used, reserve, frame_payload_size);
++        // Every block is free once the worker has read what was recorded.
++        scheduler.WaitWorker();
++        for (size_t frame = 0; frame < FRAMES_IN_FLIGHT; ++frame) {
++            RecycleFrame(frame);
++        }
++        frame_taken = 0;
++    }
++    Block block;
++    for (auto it = free_blocks.begin(); it != free_blocks.end(); ++it) {
++        if (it->capacity >= reserve) {
++            block = std::move(*it);
++            free_blocks.erase(it);
++            break;
++        }
++    }
++    if (!block.entries) {
++        block.capacity = capacity;
++        block.entries = std::make_unique_for_overwrite<DescriptorUpdateEntry[]>(capacity);
++        held_entries += capacity;
++    }
++    frame_taken += block.capacity;
++    block_begin = block.entries.get();
++    payload_cursor = block_begin;
++    block_end = block_begin + block.capacity;
++    frame_blocks[frame_index].push_back(std::move(block));
+ }
+ 
+ void UpdateDescriptorQueue::Acquire(Scheduler& scheduler, size_t required_entries,
+@@ -43,12 +111,8 @@ void UpdateDescriptorQueue::Acquire(Scheduler& scheduler, size_t required_entrie
+     const size_t reserve = required_entries > 0 ? required_entries : DEFAULT_REQUIRED_ENTRIES;
+     ASSERT_MSG(reserve < frame_payload_size, "Descriptor reservation {} >= frame capacity {}",
+                reserve, frame_payload_size);
+-    const size_t used = static_cast<size_t>(std::distance(payload_start, payload_cursor));
+-    if (used + reserve >= frame_payload_size) {
+-        LOG_WARNING(Render_Vulkan, "Payload overflow (used={}, reserve={}, capacity={})",
+-                    used, reserve, frame_payload_size);
+-        scheduler.WaitWorker();
+-        payload_cursor = payload_start;
++    if (payload_cursor == nullptr || static_cast<size_t>(block_end - payload_cursor) < reserve) {
++        NextBlock(scheduler, reserve);
+     }
+     upload_start = payload_cursor;
+ }
+diff --git a/src/video_core/renderer_vulkan/vk_update_descriptor.h b/src/video_core/renderer_vulkan/vk_update_descriptor.h
+index 4d393376b4..fea39ea3bb 100644
+--- a/src/video_core/renderer_vulkan/vk_update_descriptor.h
++++ b/src/video_core/renderer_vulkan/vk_update_descriptor.h
+@@ -6,6 +6,7 @@
+ 
+ #pragma once
+ 
++#include <array>
+ #include <memory>
+ #include <variant>
+ #include <vector>
+@@ -115,15 +116,39 @@ public:
+     }
+ 
+ private:
++    // The entries are kept in blocks a frame takes as it needs them; a frame's blocks are free
++    // again when its slot comes round, FRAMES_IN_FLIGHT frames later (the scheduler's worker has
++    // read them by then, as it had the fixed per-frame payload this replaces). The fixed payload
++    // was frame_payload_size entries for each of the eight frames, used or not: 96 MiB for the
++    // guest queue and 24 MiB for the compute passes. frame_payload_size is now the most a frame
++    // takes before it waits for the worker and starts over, as the fixed payload did when full.
++    static constexpr size_t BLOCK_ENTRIES = 0x4000; // 384 KiB
++
++    struct Block {
++        std::unique_ptr<DescriptorUpdateEntry[]> entries;
++        size_t capacity = 0;
++    };
++
++    void NextBlock(Scheduler& scheduler, size_t reserve);
++    void RecycleFrame(size_t frame);
++
+     const Device& device;
+     const size_t frame_payload_size;
+     const bool supports_descriptor_buffer;
+     bool use_descriptor_buffer{false};
+     size_t frame_index{0};
+     DescriptorUpdateEntry* payload_cursor = nullptr;
+-    DescriptorUpdateEntry* payload_start = nullptr;
++    DescriptorUpdateEntry* block_begin = nullptr;
++    DescriptorUpdateEntry* block_end = nullptr;
+     const DescriptorUpdateEntry* upload_start = nullptr;
+-    std::unique_ptr<DescriptorUpdateEntry[]> payload;
++    std::array<std::vector<Block>, FRAMES_IN_FLIGHT> frame_blocks;
++    std::array<size_t, FRAMES_IN_FLIGHT> frame_blocks_peak{};
++    std::vector<Block> free_blocks;
++    size_t frame_taken = 0;  // entries in the blocks the current frame took
++    size_t frame_used = 0;   // entries it wrote in the blocks it has left
++    size_t frame_used_peak = 0;
++    size_t frames_reported = 0;
++    size_t held_entries = 0; // entries in every block this queue holds
+ };
+ 
+ // TODO: should these be separate classes instead?

@@ -1,8 +1,8 @@
 diff --git a/src/shader_recompiler/CMakeLists.txt b/src/shader_recompiler/CMakeLists.txt
-index e4df9c045d..753c2bdc5d 100644
+index 0fd6b768a2..89ad667c9a 100644
 --- a/src/shader_recompiler/CMakeLists.txt
 +++ b/src/shader_recompiler/CMakeLists.txt
-@@ -166,6 +166,7 @@ add_library(shader_recompiler STATIC
+@@ -168,6 +168,7 @@ add_library(shader_recompiler STATIC
      frontend/maxwell/translate/impl/video_set_predicate.cpp
      frontend/maxwell/translate/impl/vote.cpp
      frontend/maxwell/translate/impl/warp_shuffle.cpp
@@ -11,10 +11,10 @@ index e4df9c045d..753c2bdc5d 100644
      frontend/maxwell/translate/translate.h
      frontend/maxwell/translate_program.cpp
 diff --git a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
-index 16567b3188..325421bd0d 100644
+index 188193bad4..bf440ef721 100644
 --- a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
 +++ b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
-@@ -1499,6 +1499,20 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+@@ -1663,6 +1663,20 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
                  }
                  break;
              }
@@ -36,10 +36,10 @@ index 16567b3188..325421bd0d 100644
              // instruction doesn't use, keeping their values in register bank 2 meanwhile.
              std::array<bool, 256> used{};
 diff --git a/src/shader_recompiler/frontend/maxwell/maxwell.inc b/src/shader_recompiler/frontend/maxwell/maxwell.inc
-index 5facfb4803..1e74e77e8d 100644
+index 370fb408b2..ec8f3994d6 100644
 --- a/src/shader_recompiler/frontend/maxwell/maxwell.inc
 +++ b/src/shader_recompiler/frontend/maxwell/maxwell.inc
-@@ -42,6 +42,7 @@ INST(HFMA2_reg,    "HFMA2 (reg)",    "0101 1101 0000 0---")
+@@ -43,6 +43,7 @@ INST(HFMA2_reg,    "HFMA2 (reg)",    "0101 1101 0000 0---")
  INST(HMUL2_reg,    "HMUL2 (reg)",    "0101 1101 0000 1---")
  INST(HSET2_reg,    "HSET2 (reg)",    "0101 1101 0001 1---")
  INST(HSETP2_reg,   "HSETP2 (reg)",   "0101 1101 0010 0---")

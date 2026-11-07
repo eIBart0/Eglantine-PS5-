@@ -1,5 +1,5 @@
 diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
-index 25a313dd22..1af960e1c6 100644
+index 35e23e8e4c..59f4526334 100644
 --- a/src/video_core/texture_cache/texture_cache.h
 +++ b/src/video_core/texture_cache/texture_cache.h
 @@ -517,6 +517,63 @@ void TextureCache<P>::FillImageViews(std::span<ImageViewInOut> views, bool compu
@@ -67,10 +67,10 @@ index 25a313dd22..1af960e1c6 100644
  
  template <class P>
 diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
-index 06fcc0de77..2b64151592 100644
+index 7b36ef5fd0..ec981f3a65 100644
 --- a/src/video_core/texture_cache/texture_cache_base.h
 +++ b/src/video_core/texture_cache/texture_cache_base.h
-@@ -237,6 +237,9 @@ public:
+@@ -241,6 +241,9 @@ public:
      /// Fill image_view_ids with the graphics/compute images in indices
      void FillImageViews(std::span<ImageViewInOut> views, bool compute, bool blacklist = true);
  
@@ -80,7 +80,7 @@ index 06fcc0de77..2b64151592 100644
      /// Handle feedback loops during draws.
      void CheckFeedbackLoop(std::span<const ImageViewInOut> views);
  
-@@ -632,6 +635,9 @@ private:
+@@ -639,6 +642,9 @@ private:
      std::deque<PendingUnswizzle> unswizzle_queue;
      u8 current_unswizzle_frame;
  

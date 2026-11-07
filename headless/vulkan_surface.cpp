@@ -5,6 +5,7 @@
 #include "display_refresh.h"
 #include <vector>
 #include <cstdio>
+#include <cstdlib>
 
 namespace Vulkan {
 vk::SurfaceKHR CreateSurface(const vk::Instance& instance,
@@ -56,9 +57,30 @@ vk::SurfaceKHR CreateSurface(const vk::Instance& instance,
     modes.resize(count);
     // The driver lists 120 Hz first when the output took it (display_refresh.h). A session that
     // asked for it takes that mode; any other keeps the 60 Hz one.
+    // The size: the output resolution's (Settings > Video), so the frame is copied 1:1 and VideoOut
+    // scales it to the screen. The driver lists 3840x2160 first, and its five framebuffers are
+    // 160 MiB of the pool where five at 1920x1080 are 40 (each size a session uses is registered
+    // and kept until the session's device goes). EDEN_PS5_SCANOUT_4K=1: 3840x2160 as before.
     const bool fast = Eden::Display::requested_hz.load() >= 120;
+    const bool scanout_4k = [] {
+        const char* value = std::getenv("EDEN_PS5_SCANOUT_4K");
+        return value != nullptr && value[0] == '1';
+    }();
+    const auto width = static_cast<uint32_t>(Eden::Display::output_width.load());
+    const auto height = static_cast<uint32_t>(Eden::Display::output_height.load());
     auto mode = modes.front();
+    bool found = false;
     for (const auto& candidate : modes) {
+        if ((candidate.parameters.refreshRate >= 119000) == fast && !scanout_4k &&
+            candidate.parameters.visibleRegion.width == width &&
+            candidate.parameters.visibleRegion.height == height) {
+            mode = candidate;
+            found = true;
+            break;
+        }
+    }
+    for (const auto& candidate : modes) {
+        if (found) break;
         if ((candidate.parameters.refreshRate >= 119000) == fast) {
             mode = candidate;
             break;
@@ -66,8 +88,9 @@ vk::SurfaceKHR CreateSurface(const vk::Instance& instance,
     }
     Eden::Display::output_millihertz.store(static_cast<int>(mode.parameters.refreshRate));
     if (mode.parameters.refreshRate >= 119000) Eden::Display::settle.store(true);
-    std::fprintf(stderr, "[EglantinePS5] Vulkan display: %u modes, asked for %d Hz, using %.2f Hz\n", count,
-                 Eden::Display::requested_hz.load(), mode.parameters.refreshRate / 1000.0);
+    std::fprintf(stderr, "[EglantinePS5] Vulkan display: %u modes, asked for %d Hz at %ux%u, using %.2f Hz at %ux%u\n",
+                 count, Eden::Display::requested_hz.load(), width, height, mode.parameters.refreshRate / 1000.0,
+                 mode.parameters.visibleRegion.width, mode.parameters.visibleRegion.height);
     const VkDisplaySurfaceCreateInfoKHR info{
         .sType = VK_STRUCTURE_TYPE_DISPLAY_SURFACE_CREATE_INFO_KHR,
         .displayMode = mode.displayMode,

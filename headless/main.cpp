@@ -26,6 +26,12 @@
 #include <cstring>
 #include <sys/stat.h>
 extern "C" size_t eden_heap_last_failure(unsigned*, size_t*);
+// src/lifecycle.c: starts this app again with launch arguments; returns only when refused.
+extern "C" int eden_restart_app_with(const char** args);
+#ifdef PS5_NATIVE
+// headless/mimalloc_heap.c: mimalloc takes the app's allocations from now on; 1 when it does.
+extern "C" int eden_mi_activate(void);
+#endif
 #endif
 #ifdef EDEN_DEV_VULKAN
 #include "sdk_audit.h"
@@ -322,6 +328,7 @@ int main(int argc, char** argv) {
         Eden::Crash::Install(Eden::LogsDir(), Eden::kAppVersion, last_crash.restarted);
         Eden::BootTrace::Ready(Eden::LogsDir(), Eden::FilesystemAccess());
         Eden::BootTrace::Line("logs and crash handler ready (%s)", Eden::LogsDir().c_str());
+        Eden::Performance::ReportMemoryAt("app start");
         for (const char* folder : {"/app0", Eden::kMountedAppDir, Eden::kInstallDir, "/mnt/sandbox/PPSA98515_000/app0"})
             Eden::BootTrace::Line("app folder candidate %s: eboot %s, font %s", folder,
                                   Eden::FileExists(std::string{folder} + "/eboot.bin") ? "yes" : "no",
@@ -642,13 +649,37 @@ int main(int argc, char** argv) {
             compatibility_probe = false;
 #endif
             Eden::BootTrace::Line("opening the launcher");
+            Eden::Performance::ReportMemoryAt("launcher opens");
             selected_game = SelectEglantinePS5Game(rooms, launch_error);
         }
 #else
         Eden::BootTrace::Line("opening the launcher");
+        Eden::Performance::ReportMemoryAt("launcher opens");
         selected_game = SelectEglantinePS5Game(rooms, launch_error);
 #endif
         Eden::BootTrace::Line("launcher closed: %s", selected_game.empty() ? "no game (quit)" : "a game was chosen");
+#if defined(PS5_NATIVE) && !defined(EDEN_DEV_PROFILE) && !defined(EDEN_DEV_ROM_ID)
+        // The game in a process of its own: what the launcher took of the pool stays behind with
+        // this one (612 MiB were held, 457 in use, when Mario Kart World's session began; its
+        // OpenGL renderer keeps a render pool and framebuffers). The new process starts the game as
+        // a forwarded one (--rom, docs/FORWARDER.md) and opens the launcher when it ends. Not while
+        // a multiplayer room is joined, which a new process would leave. Testing switch "Game in a
+        // clean process": EDEN_PS5_CLEAN_LAUNCH=0 starts it here, as before.
+        if (!selected_game.empty() && rooms.GetSnapshot().phase == Eden::Multiplayer::Phase::Idle) {
+            const char* clean = std::getenv("EDEN_PS5_CLEAN_LAUNCH");
+            if (clean == nullptr || clean[0] != '0') {
+                Eden::Performance::ReportMemoryAt("launcher closed");
+                Eden::Report("launch", ("Starting the game in a clean process: " + selected_game).c_str());
+                std::fflush(nullptr);
+                const char* arguments[] = {"--rom", selected_game.c_str(), nullptr};
+                const int refused = eden_restart_app_with(arguments);
+                char text[96];
+                std::snprintf(text, sizeof(text), "The system refused a clean process (0x%08x); the game starts here",
+                              static_cast<unsigned>(refused));
+                Eden::Report("launch", text);
+            }
+        }
+#endif
         }
         if (selected_game.empty()) {
             Eden::Report("exit", "Launcher closed");
@@ -710,6 +741,12 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Vulkan is not available in this build yet. Select OpenGL in Settings > Video to play.");
 #endif
         Eden::Report("launch", Eden::BackendName(backend));
+        Eden::Performance::ReportMemoryAt("session starts");
+#ifdef PS5_NATIVE
+        // The session's allocations from mimalloc (headless/mimalloc_heap.c), which gives free
+        // memory back to the pool; what the heap holds stays there. EDEN_HEAP_MIMALLOC=0: the heap.
+        if (eden_mi_activate()) Eden::Report("launch", "Allocator: mimalloc");
+#endif
         const bool game = std::filesystem::is_regular_file(selected_game);
         if (!game) throw std::runtime_error("Selected ROM is no longer available");
         const char* guest = selected_game.c_str();
@@ -1149,6 +1186,36 @@ int main(int argc, char** argv) {
                                          eden_game_title_id(guest) == 0x0400C3F00006E000ULL);
 #endif
             Settings::values.use_asynchronous_shaders = speed.async_shaders;
+            {
+                // ASTC textures are recompressed for the PS5's GPU: opaque ones to BC1 (4 bits a
+                // texel), the rest to BC3 (8 bits). BC1 for all of them halves those too, with
+                // 1-bit alpha: harder edges on leaves and fences. On by default in Mario Kart
+                // World, which runs out of memory in a race (testing switch: EDEN_PS5_ASTC_BC1=0
+                // keeps BC3 there, 1 takes BC1 in every game).
+                const char* value = std::getenv("EDEN_PS5_ASTC_BC1");
+                const bool every_game = value != nullptr && value[0] == '1';
+                const bool never = value != nullptr && value[0] == '0';
+                const bool bc1 = every_game || (!never && eden_game_title_id(guest) == 0x0400C3F00006E000ULL);
+                Settings::values.astc_recompression.SetValue(bc1 ? Settings::AstcRecompression::Bc1
+                                                                 : Settings::AstcRecompression::Bc3);
+                if (bc1) Eden::Report("launch", "ASTC textures recompressed to BC1");
+            }
+#ifdef PS5_NATIVE
+            {
+                // The guest memory service's SSD swap (src/guest_memory_service.inc): its file, in the
+                // data folder, made when the game's memory is and deleted with it. Testing switch
+                // "SSD swap": EDEN_GUEST_SWAP=0 leaves it out; EDEN_GUEST_SWAP_MIB sizes it (4096).
+                const char* swap = std::getenv("EDEN_GUEST_SWAP");
+                if (Eden::FilesystemAccess() && (swap == nullptr || swap[0] != '0')) {
+                    const std::string folder = Eden::UserDir() + "/swap";
+                    std::error_code swap_error;
+                    std::filesystem::create_directories(folder, swap_error);
+                    setenv("EDEN_GUEST_SWAP_FILE", (folder + "/guest.swap").c_str(), 1);
+                } else {
+                    unsetenv("EDEN_GUEST_SWAP_FILE");
+                }
+            }
+#endif
             if (speed.fast_gpu) {
                 // Nothing calls UpdateGPUAccuracy() here; set the live value too.
                 Settings::values.gpu_accuracy.SetValue(Settings::GpuAccuracy::Low);

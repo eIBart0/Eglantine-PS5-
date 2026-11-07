@@ -24,7 +24,7 @@ index 97d2dcd482..016ab5adf9 100644
      }
  }
 diff --git a/src/video_core/dma_pusher.cpp b/src/video_core/dma_pusher.cpp
-index a7109a8aea..e7c91f58c1 100644
+index da705bb169..66b47e0b6f 100644
 --- a/src/video_core/dma_pusher.cpp
 +++ b/src/video_core/dma_pusher.cpp
 @@ -84,6 +84,7 @@ void DmaPusher::DispatchCalls() {
@@ -44,7 +44,7 @@ index a7109a8aea..e7c91f58c1 100644
      const u64 suspensions_before = suspensions.load(std::memory_order_relaxed);
      if (!puller.ResumeAcquire(*this)) {
          return false;
-@@ -469,6 +472,7 @@ void DmaPusher::CallMethod(u32 argument) {
+@@ -523,6 +526,7 @@ void DmaPusher::CallMethod(u32 argument) {
      }
      auto& split = VideoCommon::GpuSplit::Get();
      if (dma_state.method < non_puller_methods) {
@@ -52,7 +52,7 @@ index a7109a8aea..e7c91f58c1 100644
          puller.CallPullerMethod(*this, Engines::Puller::MethodCall{
              dma_state.method,
              argument,
-@@ -532,6 +536,7 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
+@@ -586,6 +590,7 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
      }
      auto& split = VideoCommon::GpuSplit::Get();
      if (dma_state.method < non_puller_methods) {

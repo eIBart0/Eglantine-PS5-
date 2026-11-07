@@ -24,6 +24,23 @@ def adapt(relative, destination, replacements):
             repack = text[begin:end]
             old = old.replace(engine, engine + repack)
             new = new.replace(configure, repack + configure)
+        # Eglantine's own compute ordering (EGLANTINE_SYNC_FIX, on unless set to 0) records the
+        # barrier before an indirect dispatch and orders a dispatch's writes before later draws,
+        # indirect reads and idle waits: the port's compute barriers would only double them.
+        if (relative.endswith('/vk_rasterizer.cpp') and 'bool SyncFixEnabled()' in text and
+                ('COMPUTE_WRITE_BARRIER' in new or 'compute_barriers' in new)):
+            continue
+        # The draw's state and record phases: newer cores count a draw's samples for their
+        # diagnostics between CounterEnable and the record, so each mark goes in on its own.
+        zpass = '    query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64, maxwell3d->regs.zpass_pixel_count_enable);\n'
+        record = '    {\n        Profile::Scope scope{Profile::Zone::DrawRecord};\n        draw_func();\n    }\n'
+        if relative.endswith('/vk_rasterizer.cpp') and old == zpass + record and old not in text:
+            diag = zpass + '    // EDEN_NX2_DIAG_SAMPLES'
+            if text.count(diag) == 1 and text.count(record) == 1:
+                text = text.replace(diag, zpass + '    ::Eden::Performance::Mark(::Eden::Performance::draw_state, phase);\n'
+                                    '    // EDEN_NX2_DIAG_SAMPLES')
+                text = text.replace(record, record + '    ::Eden::Performance::Mark(::Eden::Performance::draw_record, phase);\n')
+                continue
         if relative.endswith('/vulkan_memory_allocator.cpp') and old.startswith('    vk::Check(vmaCreateBuffer(') and old not in text:
             if 'VkResult result = vmaCreateBuffer(' in text:
                 # This core already retries outside the driver budget on allocation failure.

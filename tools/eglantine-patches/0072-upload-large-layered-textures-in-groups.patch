@@ -1,8 +1,8 @@
 diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
-index dcfd270df3..a4d6165390 100644
+index c341d4bb89..d747ad55f5 100644
 --- a/src/video_core/texture_cache/texture_cache.h
 +++ b/src/video_core/texture_cache/texture_cache.h
-@@ -2009,6 +2009,28 @@ std::vector<u32> TextureCache<P>::BindSparseLayers(Image& image, std::span<const
+@@ -2016,6 +2016,28 @@ std::vector<u32> TextureCache<P>::BindSparseLayers(Image& image, std::span<const
  template <class P>
  void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
      if constexpr (requires { &Runtime::AccelerateImageUploadLayers; }) {

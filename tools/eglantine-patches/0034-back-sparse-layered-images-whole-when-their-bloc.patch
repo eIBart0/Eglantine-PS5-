@@ -1,8 +1,8 @@
 diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
-index 6501a2c15b..ef73aabba9 100644
+index 3adcca2eb2..ed5fa5af92 100644
 --- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
 +++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
-@@ -2623,6 +2623,23 @@ void TextureCacheRuntime::TickFrame() {
+@@ -2637,6 +2637,23 @@ void TextureCacheRuntime::TickFrame() {
      });
  }
  
@@ -26,7 +26,7 @@ index 6501a2c15b..ef73aabba9 100644
  Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu_addr_,
               VAddr cpu_addr_)
      : VideoCommon::ImageBase(info_, gpu_addr_, cpu_addr_), scheduler{&runtime_.scheduler},
-@@ -2646,10 +2663,34 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
+@@ -2660,10 +2677,34 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
          const ImageInfo host_info = TrimmedHostInfo(runtime_.device, info, host_level_offset);
          const u64 texels = u64{host_info.size.width} * host_info.size.height *
                             host_info.size.depth * static_cast<u64>(host_info.resources.layers);
@@ -64,7 +64,7 @@ index 6501a2c15b..ef73aabba9 100644
          } else if (texels <= (u64{1} << 28)) {
              // Not too big to back (see MemoryAllocator::CreateImage): unbacked because nothing
              // was written there yet, so the first write gets it replaced.
-@@ -3177,6 +3218,16 @@ bool Image::InitSparseLayers() {
+@@ -3191,6 +3232,16 @@ bool Image::InitSparseLayers() {
          s.tile_width *= block_width;
          s.tile_height *= block_height;
      }

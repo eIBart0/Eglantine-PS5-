@@ -1,5 +1,5 @@
 diff --git a/src/video_core/gpu_thread.cpp b/src/video_core/gpu_thread.cpp
-index 540209bad5..3a6ec7f42d 100644
+index 096c52e938..403fb3c61f 100644
 --- a/src/video_core/gpu_thread.cpp
 +++ b/src/video_core/gpu_thread.cpp
 @@ -53,6 +53,8 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten

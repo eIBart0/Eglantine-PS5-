@@ -1,6 +1,6 @@
 diff --git a/src/video_core/nx2_loading_probe.h b/src/video_core/nx2_loading_probe.h
 new file mode 100644
-index 0000000..fed3f84
+index 0000000000..fed3f84198
 --- /dev/null
 +++ b/src/video_core/nx2_loading_probe.h
 @@ -0,0 +1,40 @@
@@ -46,7 +46,7 @@ index 0000000..fed3f84
 +}
 diff --git a/src/video_core/readback_dependency_diagnostics.h b/src/video_core/readback_dependency_diagnostics.h
 new file mode 100644
-index 0000000..5e2114e
+index 0000000000..d57a348f38
 --- /dev/null
 +++ b/src/video_core/readback_dependency_diagnostics.h
 @@ -0,0 +1,217 @@

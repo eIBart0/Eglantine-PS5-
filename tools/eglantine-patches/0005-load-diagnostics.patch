@@ -1,8 +1,8 @@
 diff --git a/src/core/loader/deconstructed_rom_directory.cpp b/src/core/loader/deconstructed_rom_directory.cpp
-index 4b1168a..d6d2d63 100644
+index e669e92dda..7a983dae46 100644
 --- a/src/core/loader/deconstructed_rom_directory.cpp
 +++ b/src/core/loader/deconstructed_rom_directory.cpp
-@@ -387,6 +387,7 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
+@@ -534,6 +534,7 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
              process, system, *module_file, code_size, should_pass_arguments, false, {},
              patch_ctx.GetPatchers(), patch_ctx.GetLastIndex());
          if (!tentative_next_load_addr) {
@@ -10,7 +10,7 @@ index 4b1168a..d6d2d63 100644
              return {ResultStatus::ErrorLoadingNSO, {}};
          }
  
-@@ -435,6 +436,7 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
+@@ -582,6 +583,7 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
              process, system, *module_file, load_addr, should_pass_arguments, true, pm,
              patch_ctx.GetPatchers(), patch_ctx.GetIndex(i));
          if (!tentative_next_load_addr) {
@@ -19,10 +19,10 @@ index 4b1168a..d6d2d63 100644
          }
  
 diff --git a/src/core/loader/nso.cpp b/src/core/loader/nso.cpp
-index 7e3b9a5..9418f37 100644
+index 3f719da360..4b3824bafb 100644
 --- a/src/core/loader/nso.cpp
 +++ b/src/core/loader/nso.cpp
-@@ -69,15 +69,25 @@ FileType AppLoader_NSO::IdentifyType(const FileSys::VirtualFile& in_file) {
+@@ -70,15 +70,25 @@ FileType AppLoader_NSO::IdentifyType(const FileSys::VirtualFile& in_file) {
  }
  
  std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::System& system, const FileSys::VfsFile& nso_file, VAddr load_base, bool should_pass_arguments, bool load_into_process, std::optional<FileSys::PatchManager> pm, std::vector<Core::NCE::Patcher>* patches, s32 patch_index) {

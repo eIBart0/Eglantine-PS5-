@@ -1,8 +1,8 @@
 diff --git a/src/core/file_sys/nup_writer.cpp b/src/core/file_sys/nup_writer.cpp
-index 4161969f9..8602cb3f6 100644
+index 3bce8e0af7..e6ecc1bc63 100644
 --- a/src/core/file_sys/nup_writer.cpp
 +++ b/src/core/file_sys/nup_writer.cpp
-@@ -35,6 +35,40 @@ namespace {
+@@ -38,6 +38,40 @@ namespace {
  using Json = nlohmann::json;
  namespace fs = std::filesystem;
  
@@ -43,7 +43,7 @@ index 4161969f9..8602cb3f6 100644
  constexpr std::array<u8, 4> Magic{'N', 'U', 'P', 0x01};
  constexpr std::array<u8, 4> TocMagic{'T', 'O', 'C', 0x01};
  constexpr u64 SuperblockSize = 0x80;
-@@ -107,7 +141,7 @@ fs::path FindDirectory(const fs::path& parent, std::string_view name) {
+@@ -111,7 +145,7 @@ fs::path FindDirectory(const fs::path& parent, std::string_view name) {
          return {};
      }
      const auto wanted = Lower(std::string{name});
@@ -52,7 +52,7 @@ index 4161969f9..8602cb3f6 100644
          if (entry.is_directory(ec) && Lower(ToUtf8(entry.path().filename())) == wanted) {
              return entry.path();
          }
-@@ -135,7 +169,7 @@ bool HasBootableExeFS(const fs::path& root) {
+@@ -139,7 +173,7 @@ bool HasBootableExeFS(const fs::path& root) {
      std::optional<u64> best_version;
      if (const auto updates = FindDirectory(root, "updates"); !updates.empty()) {
          std::error_code ec;
@@ -61,7 +61,7 @@ index 4161969f9..8602cb3f6 100644
              const auto version = ParseDecimal(ToUtf8(entry.path().filename()));
              const auto candidate = FindDirectory(entry.path(), "exefs");
              if (version && bootable(candidate) && (!best_version || *version > *best_version)) {
-@@ -536,7 +570,7 @@ public:
+@@ -560,7 +594,7 @@ public:
          std::vector<std::pair<u64, fs::path>> versions;
          std::error_code ec;
          if (!updates.empty()) {
@@ -70,7 +70,7 @@ index 4161969f9..8602cb3f6 100644
                  const auto version = ParseDecimal(ToUtf8(entry.path().filename()));
                  if (version && entry.is_directory(ec) && HasContent(entry.path())) {
                      if (*version > std::numeric_limits<u32>::max()) {
-@@ -556,12 +590,12 @@ public:
+@@ -580,12 +614,12 @@ public:
  
          if (!dlc.empty()) {
              std::vector<std::pair<std::string, fs::path>> addons;
@@ -85,7 +85,7 @@ index 4161969f9..8602cb3f6 100644
                      if (content.is_directory(ec) && HasContent(content.path())) {
                          addons.emplace_back(title_name + "/" + ToUtf8(content.path().filename()),
                                              content.path());
-@@ -631,7 +665,7 @@ private:
+@@ -667,7 +701,7 @@ private:
              CollectTree(index, romfs, "romfs");
          }
          std::error_code ec;
@@ -94,7 +94,7 @@ index 4161969f9..8602cb3f6 100644
              const auto name = ToUtf8(entry.path().filename());
              const auto lower = Lower(name);
              if (entry.path() == exefs || entry.path() == romfs ||
-@@ -734,9 +768,8 @@ private:
+@@ -776,9 +810,8 @@ private:
  
      void CollectTree(u32 package, const fs::path& root, const std::string& prefix) {
          plan.entries.push_back({package, prefix, Relative(root), true});
@@ -106,7 +106,7 @@ index 4161969f9..8602cb3f6 100644
              const auto path = prefix + "/" + ToUtf8(fs::relative(entry.path(), root));
              if (!entry.is_symlink() && entry.is_directory()) {
                  plan.entries.push_back({package, path, Relative(entry.path()), true});
-@@ -814,10 +847,9 @@ bool IsEmptyDirectory(const fs::path& path) {
+@@ -856,10 +889,9 @@ bool IsEmptyDirectory(const fs::path& path) {
  void RemoveEmptyTree(const fs::path& root) {
      std::error_code ec;
      std::vector<fs::path> directories;
@@ -120,7 +120,7 @@ index 4161969f9..8602cb3f6 100644
          }
      }
      for (auto it = directories.rbegin(); it != directories.rend(); ++it) {
-@@ -1461,7 +1493,7 @@ Metadata ProbeMetadata(const fs::path& dump_root) {
+@@ -1503,7 +1535,7 @@ Metadata ProbeMetadata(const fs::path& dump_root) {
      std::vector<std::pair<u64, fs::path>> update_dirs;
      std::error_code ec;
      if (!updates.empty()) {

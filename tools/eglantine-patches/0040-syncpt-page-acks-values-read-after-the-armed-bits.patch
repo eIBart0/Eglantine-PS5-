@@ -1,8 +1,8 @@
 diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
-index 2ddb7351b4..7f97d06668 100644
+index 6e2338df7e..116ce25ae2 100644
 --- a/src/core/hle/service/nx2_gsv.h
 +++ b/src/core/hle/service/nx2_gsv.h
-@@ -3340,28 +3340,68 @@ private:
+@@ -3437,28 +3437,68 @@ private:
      // Answers every armed wait: the value page is current, so the client rechecks its threshold
      // and rearms if it still has to wait. Acknowledging without a value change costs the client a
      // wakeup per poll, which keeps waits whose syncpoint we never see from hanging.
@@ -78,7 +78,7 @@ index 2ddb7351b4..7f97d06668 100644
      // nn::gsv::shim::CalculateRequirements(u64* size, u64* alignment, preference, u32): the 0x40-byte
      // InterModuleUserImagePreference (words 2..17) and a u32 (word 18). A block-linear preference
      // (MakeInterModuleBlockUserImagePreference) holds kind 2 at word 3, (width - 1) | (height - 1)
-@@ -3786,6 +3826,7 @@ private:
+@@ -3888,6 +3928,7 @@ private:
      u64 m_syncpt_rw{};
      u64 m_syncpt_ro{};
      u32 m_syncpt_count{};

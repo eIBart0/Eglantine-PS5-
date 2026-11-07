@@ -1,8 +1,8 @@
 diff --git a/src/common/CMakeLists.txt b/src/common/CMakeLists.txt
-index 76c5019788..5d4f5eaaba 100644
+index 20daa7bdce..b1bc8ba233 100644
 --- a/src/common/CMakeLists.txt
 +++ b/src/common/CMakeLists.txt
-@@ -84,6 +84,7 @@ add_library(
+@@ -85,6 +85,7 @@ add_library(
      overflow.h
      page_table.cpp
      page_table.h
@@ -117,10 +117,10 @@ index 5931fd0882..a71bf02d5e 100644
  
  template <typename Traits>
 diff --git a/src/video_core/memory_manager.cpp b/src/video_core/memory_manager.cpp
-index ae64372b9c..5633e73bbd 100644
+index aef8208bfe..2d2ac467ab 100644
 --- a/src/video_core/memory_manager.cpp
 +++ b/src/video_core/memory_manager.cpp
-@@ -9,6 +9,7 @@
+@@ -11,6 +11,7 @@
  #include "common/alignment.h"
  #include "common/assert.h"
  #include "common/logging.h"
@@ -128,7 +128,7 @@ index ae64372b9c..5633e73bbd 100644
  #include "core/core.h"
  #include "core/hle/kernel/k_page_table.h"
  #include "core/hle/kernel/k_process.h"
-@@ -279,36 +280,33 @@ T MemoryManager::Read(GPUVAddr addr) const {
+@@ -283,36 +284,33 @@ T MemoryManager::Read(GPUVAddr addr) const {
          }
      }
  
