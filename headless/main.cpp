@@ -746,6 +746,7 @@ int main(int argc, char** argv) {
         // The session's allocations from mimalloc (headless/mimalloc_heap.c), which gives free
         // memory back to the pool; what the heap holds stays there. EDEN_HEAP_MIMALLOC=0: the heap.
         if (eden_mi_activate()) Eden::Report("launch", "Allocator: mimalloc");
+        else Eden::Report("launch", "Allocator: the heap (mimalloc switched off or did not start)");
 #endif
         const bool game = std::filesystem::is_regular_file(selected_game);
         if (!game) throw std::runtime_error("Selected ROM is no longer available");

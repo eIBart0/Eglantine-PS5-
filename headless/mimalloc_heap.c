@@ -21,6 +21,11 @@
  * Testing switch "App memory allocator": EDEN_HEAP_MIMALLOC=0 keeps the heap for everything.
  */
 #define MI_TLS_MODEL_PTHREADS 1
+/* A thread's id: pthread_self(). On x86-64 mimalloc reads the thread control block's self pointer
+ * at %fs:0, which is 0 on the PS5: every thread had id 0, so mimalloc took the first run of each
+ * of its run-once steps for a recursive call and skipped it, process initialization included, and
+ * 01.219.021 crashed in _mi_thread_init_with_heap on the first allocation of every session. */
+#define MI_PRIM_THREAD_ID() ((mi_thread_id_t)(uintptr_t)pthread_self())
 #ifndef MI_DEBUG
 #define MI_DEBUG 0
 #endif
@@ -452,6 +457,13 @@ int eden_mi_activate(void) {
   mi_option_set(mi_option_arena_purge_min_size, (long)(EDEN_MI_BLOCK / 1024));
   mi_option_set(mi_option_show_errors, 1);
   _mi_auto_process_init(); /* as the loader's constructor would have, before main */
+  /* Only a mimalloc that started whole takes the app's allocations: else the heap keeps them. */
+  void *probe = _mi_process.process_is_initialized ? mi_malloc(64) : NULL;
+  if (probe == NULL) {
+    sceKernelDebugOutText(0, "EDEN_MIMALLOC did not start: the heap keeps every allocation\n");
+    return 0;
+  }
+  mi_free(probe);
   atomic_store_explicit(&eden_mi_active, 1, memory_order_release);
   char line[128];
   snprintf(line, sizeof(line), "EDEN_MIMALLOC active: %zu MiB of address space at %p\n", span >> 20, range);
