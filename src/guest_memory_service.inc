@@ -486,10 +486,7 @@ bool SwapOut(SparseRange& range, std::size_t slot) noexcept {
     bool hidden = done == SparseSlot && MapSlot(at, PROT_NONE, zero_block);
     if (done == SparseSlot && !hidden) {
         // No mapping without access to the zero block: the address space alone, reserved again.
-        void* again = reinterpret_cast<void*>(at);
-        hidden = munmap(again, SparseSlot) == 0 &&
-                 sceKernelReserveVirtualRange(&again, SparseSlot, MAP_FIXED, SparseSlot) == 0 &&
-                 again == reinterpret_cast<void*>(at);
+        hidden = ReserveOver(reinterpret_cast<void*>(at), SparseSlot, SparseSlot) == 1;
         if (!hidden && !MapSlot(at, PROT_READ, range.physical[slot])) std::abort();
     }
     if (!hidden) {
