@@ -2496,8 +2496,8 @@ msgid "Task and mesh draws"
 msgstr "Dibujos task y mesh"
 
 #: pe/ui/testing.cpp, pe/ui/settings.cpp
-msgid "Off by default in Mario Kart World, where they hang the GPU. Off skips them in every game; On draws them in Mario Kart World too."
-msgstr "De forma predeterminada no se dibujan en Mario Kart World, donde cuelgan la GPU. «No»: se omiten en todos los juegos; «Sí»: también se dibujan en Mario Kart World."
+msgid "Off by default in Mario Kart World, where they hang the GPU. Off skips them in every game; On draws them in Mario Kart World too; Task off skips only those with a task shader."
+msgstr "Por defecto no se dibujan en Mario Kart World, donde cuelgan la GPU. «No»: se omiten en todos los juegos; «Sí»: también se dibujan en Mario Kart World; «Sin task»: solo se omiten los que tienen task shader."
 
 #: pe/ui/testing.cpp, pe/ui/settings.cpp
 msgid "Split GPU thread"
@@ -2662,3 +2662,19 @@ msgstr "Lo predeterminado: se omite la escritura de un registro de GPU que repit
 #: pe/ui/testing.cpp
 msgid "Mark all"
 msgstr "Marcarlas todas"
+
+#: pe/ui/testing.cpp
+msgid "Task off"
+msgstr "Sin task"
+
+#: pe/ui/testing.cpp
+msgid "Mesh shader parts"
+msgstr "Partes de mesh shaders"
+
+#: pe/ui/testing.cpp
+msgid "A mesh shader whose primitives do not fit in one go runs in parts on the PS5. By default each part runs the shader again. Shared: the first part shares its results and the others wait for it on the GPU, as before; the suspect in the GPU hangs of Zelda and Mario Kart World."
+msgstr "En la PS5, un mesh shader cuyas primitivas no caben de una vez se ejecuta por partes. Por defecto cada parte vuelve a ejecutar el shader. «Compartidas»: la primera parte comparte sus resultados y las demás la esperan en la GPU, como antes; es lo que se sospecha que cuelga la GPU en Zelda y Mario Kart World."
+
+#: pe/ui/testing.cpp
+msgid "Shared (as before)"
+msgstr "Compartidas (como antes)"

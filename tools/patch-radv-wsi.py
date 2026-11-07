@@ -56,29 +56,85 @@ replace('''                       (double)period / 1e6);
 replace('   wsi->base.get_support =', '   videoout_ref();\n\n   wsi->base.get_support =')
 replace('   if (wsi)\n      vk_free(alloc, wsi);',
         '   if (wsi) {\n      videoout_unref();\n      vk_free(alloc, wsi);\n      wsi_device->wsi[VK_ICD_WSI_PLATFORM_DISPLAY] = NULL;\n   }')
-if sys.argv[1:2] == ['--check']:
-    # Is the driver that was built (its recorded display source, EDEN_WSI_SHA256) this adaptation?
-    recorded = Path(sys.argv[2]).read_text().split()[0] if Path(sys.argv[2]).is_file() else ''
-    sys.exit(0 if recorded == hashlib.sha256(text.encode()).hexdigest() else 1)
-changed = not target.exists() or target.read_text() != text
-if changed:
-    target.write_text(text)
-    # Upstream caches the whole build by pin. Invalidate only that receipt;
-    # Ninja retains all unchanged objects and rebuilds the patched WSI.
-    provenance = root.parent/'mihawk-vulkan-review/.deps/native/radv-release/PROVENANCE.txt'
-    if provenance.exists():
-        provenance.replace(provenance.with_suffix('.base.txt'))
-print(f'RADV WSI adaptation changed={changed} sha256={hashlib.sha256(text.encode()).hexdigest()}')
-
 # Preserve the reason behind RADV's successful-but-empty device enumeration.
 # These startup-only diagnostics avoid repeated full game runs for each stage.
-for relative, replacements in {
+adaptations = {
     # Restore the pinned upload path: explicit CPU flush did not affect HUD corruption.
-    'src/amd/vulkan/radv_cmd_buffer.c': [],
+    # The first task/mesh draws, and how the driver runs them (stderr.log).
+    'src/amd/vulkan/radv_cmd_buffer.c': [
+        ('#include "radv_cmd_buffer.h"\n', '#include "radv_cmd_buffer.h"\n#include <stdio.h>\n'),
+        ('   if (!radv_before_taskmesh_draw(cmd_buffer, &info, 1, false))\n      return;\n\n'
+         '   if (radv_cmdbuf_has_stage(cmd_buffer, MESA_SHADER_TASK) && !cmd_buffer->gang.cs) {\n'
+         '      radv_task_emu_draw_direct(cmd_buffer, x, y, z);\n',
+         '   if (!radv_before_taskmesh_draw(cmd_buffer, &info, 1, false))\n      return;\n\n'
+         '   {\n'
+         '      static unsigned logged;\n'
+         '      const unsigned n = __atomic_add_fetch(&logged, 1, __ATOMIC_RELAXED);\n'
+         '      if (n <= 32) {\n'
+         '         const struct radv_shader *ms = cmd_buffer->state.shaders[MESA_SHADER_MESH];\n'
+         '         fprintf(stderr, "radv/ps5: mesh draw %u: %ux%ux%u workgroups, %s, parts=%u records=%d publish=%d\\n", n, x, y,\n'
+         '                 z, !radv_cmdbuf_has_stage(cmd_buffer, MESA_SHADER_TASK) ? "mesh only"\n'
+         '                    : cmd_buffer->gang.cs ? "task on the compute ring" : "task emulated",\n'
+         '                 ms ? (unsigned)ms->info.ms.prim_parts : 0u, ms ? (int)ms->info.ms.draw_records : 0,\n'
+         '                 ms ? (int)radv_ms_publishes(&ms->info) : 0);\n'
+         '      }\n'
+         '   }\n'
+         '   if (radv_cmdbuf_has_stage(cmd_buffer, MESA_SHADER_TASK) && !cmd_buffer->gang.cs) {\n'
+         '      radv_task_emu_draw_direct(cmd_buffer, x, y, z);\n'),
+    ],
     'src/amd/vulkan/radv_physical_device.c': [
         ('   if (result == VK_ERROR_INCOMPATIBLE_DRIVER || result == VK_ERROR_INITIALIZATION_FAILED)\n      return VK_SUCCESS;',
          '   if (result != VK_SUCCESS) fprintf(stderr, "radv/ps5: physical device creation result=%d\\n", result);\n   if (result == VK_ERROR_INCOMPATIBLE_DRIVER || result == VK_ERROR_INITIALIZATION_FAILED)\n      return VK_SUCCESS;'),
         ('   if (!pdev->addrlib) {', '   if (!pdev->addrlib) {\n      fprintf(stderr, "radv/ps5: addrlib creation failed\\n");'),
+        # A mesh shader's parts take the first part's outputs from the publish ring only with
+        # RADV_PS5_MS_PUBLISH=1 (radv_shader_info.h below). The setting goes into the pipeline
+        # cache's UUID: a cache written with the other setting holds shaders compiled the other way.
+        ('static int\nradv_device_get_cache_uuid(struct radv_physical_device *pdev, void *uuid)\n{\n'
+         '   blake3_hasher ctx;\n   unsigned char blake3[BLAKE3_KEY_LEN];\n\n'
+         '   memset(uuid, 0, VK_UUID_SIZE);\n   _mesa_blake3_init(&ctx);\n',
+         'bool radv_ps5_ms_publish;\n\n'
+         'static int\nradv_device_get_cache_uuid(struct radv_physical_device *pdev, void *uuid)\n{\n'
+         '   blake3_hasher ctx;\n   unsigned char blake3[BLAKE3_KEY_LEN];\n\n'
+         '   static bool told;\n'
+         '   radv_ps5_ms_publish = debug_get_bool_option("RADV_PS5_MS_PUBLISH", false);\n'
+         '   if (!told) {\n'
+         '      told = true;\n'
+         '      fprintf(stderr, "radv/ps5: mesh shader parts %s (RADV_PS5_MS_PUBLISH)\\n",\n'
+         '              radv_ps5_ms_publish ? "share the first part\'s outputs through the publish ring"\n'
+         '                                  : "each run the workgroup");\n'
+         '   }\n\n'
+         '   memset(uuid, 0, VK_UUID_SIZE);\n   _mesa_blake3_init(&ctx);\n'),
+        ('   _mesa_blake3_final(&ctx, blake3);\n\n   memcpy(uuid, blake3, VK_UUID_SIZE);\n   return 0;\n}\n',
+         '   _mesa_blake3_update(&ctx, &radv_ps5_ms_publish, sizeof(radv_ps5_ms_publish));\n'
+         '   _mesa_blake3_final(&ctx, blake3);\n\n   memcpy(uuid, blake3, VK_UUID_SIZE);\n   return 0;\n}\n'),
+    ],
+    # The publish ring makes a mesh shader's later parts wait in a loop for the first one's slot,
+    # GPU-wide; the GPU stopped on the first task/mesh draws of Mario Kart World and The Legend of
+    # Zelda: Ocarina of Time. Without it each part runs the API workgroup again.
+    'src/amd/vulkan/radv_shader_info.h': [
+        ('static inline bool\nradv_ms_publishes(const struct radv_shader_info *info)\n{\n'
+         '   return info->ms.prim_parts > 1 && info->ms.draw_records;\n}\n',
+         '/* EglantinePS5: RADV_PS5_MS_PUBLISH=1 (radv_physical_device.c); off by default. */\n'
+         'extern bool radv_ps5_ms_publish;\n\n'
+         'static inline bool\nradv_ms_publishes(const struct radv_shader_info *info)\n{\n'
+         '   return radv_ps5_ms_publish && info->ms.prim_parts > 1 && info->ms.draw_records;\n}\n'),
+    ],
+    # What each mesh shader compiled into (stderr.log, the first 64).
+    'src/amd/vulkan/radv_shader.c': [
+        ('      options.ms_prim_parts = info->ms.prim_parts;\n      options.ms_publish = radv_ms_publishes(info);\n',
+         '      options.ms_prim_parts = info->ms.prim_parts;\n      options.ms_publish = radv_ms_publishes(info);\n'
+         '      {\n'
+         '         static unsigned logged;\n'
+         '         const unsigned n = __atomic_add_fetch(&logged, 1, __ATOMIC_RELAXED);\n'
+         '         if (n <= 64)\n'
+         '            fprintf(stderr, "radv/ps5: mesh shader %u: parts=%u publish=%d draw_records=%d task=%d workgroup=%u "\n'
+         '                    "max_vertices=%u max_primitives=%u primitive=%u per_primitive_outputs=%#llx\\n", n,\n'
+         '                    (unsigned)info->ms.prim_parts, (int)options.ms_publish, (int)info->ms.draw_records,\n'
+         '                    (int)info->ms.has_task, (unsigned)info->workgroup_size,\n'
+         '                    (unsigned)nir->info.mesh.max_vertices_out, (unsigned)nir->info.mesh.max_primitives_out,\n'
+         '                    (unsigned)nir->info.mesh.primitive_type,\n'
+         '                    (unsigned long long)(nir->info.outputs_written & nir->info.per_primitive_outputs));\n'
+         '      }\n'),
     ],
     'src/amd/vulkan/winsys/ps5/radv_ps5_winsys.c': [
         ('   if (!radv_ps5_platform_init())\n      return;', '   if (!radv_ps5_platform_init()) {\n      fprintf(stderr, "radv/ps5: queue platform initialization failed\\n");\n      return;\n   }'),
@@ -97,16 +153,45 @@ radv_ps5_memory_grant_gpu(void *address, uint64_t bytes)
 }''', (root/'tools/radv-host-memory.inc').read_text().strip()),
         ('   if (!placed) {', '   if (!placed) {\n      fprintf(stderr, "radv/ps5: mapping rejected result=%d address=%p bytes=%llu window32=%d\\n", result, address, (unsigned long long)bytes, window32);'),
     ],
-}.items():
-    original = root.parent/'mihawk-mesa-review'/relative
-    destination = root.parent/'mihawk-vulkan-review/.deps/work/radv-src'/relative
-    adapted = original.read_text()
+}
+adapted_texts = {}
+for relative, replacements in adaptations.items():
+    adapted = (root.parent/'mihawk-mesa-review'/relative).read_text()
     for old, new in replacements:
         assert adapted.count(old) == 1, f'Pinned initialization anchor changed: {relative}'
         adapted = adapted.replace(old, new)
+    adapted_texts[relative] = adapted
+
+# What a built driver must have been built from: the display code and every other adapted file
+# (EDEN_WSI_SHA256; tools/prepare-build.sh rebuilds the driver when it differs).
+whole = hashlib.sha256(text.encode())
+for relative in sorted(adapted_texts):
+    whole.update(b'\0' + relative.encode() + b'\0' + adapted_texts[relative].encode())
+digest = whole.hexdigest()
+if sys.argv[1:2] == ['--check']:
+    # Is the driver that was built (its recorded source digest, EDEN_WSI_SHA256) this adaptation?
+    recorded = Path(sys.argv[2]).read_text().split()[0] if Path(sys.argv[2]).is_file() else ''
+    sys.exit(0 if recorded == digest else 1)
+if sys.argv[1:2] == ['--digest']:
+    print(f'{digest}  RADV adaptation (wsi_common_videoout.c and {len(adapted_texts)} more files)')
+    sys.exit(0)
+
+changed = not target.exists() or target.read_text() != text
+if changed:
+    target.write_text(text)
+    # Upstream caches the whole build by pin. Invalidate only that receipt;
+    # Ninja retains all unchanged objects and rebuilds the patched WSI.
+    provenance = root.parent/'mihawk-vulkan-review/.deps/native/radv-release/PROVENANCE.txt'
+    if provenance.exists():
+        provenance.replace(provenance.with_suffix('.base.txt'))
+print(f'RADV WSI adaptation changed={changed} sha256={hashlib.sha256(text.encode()).hexdigest()}')
+
+for relative, adapted in adapted_texts.items():
+    destination = root.parent/'mihawk-vulkan-review/.deps/work/radv-src'/relative
     if destination.read_text() != adapted:
         destination.write_text(adapted)
         provenance = root.parent/'mihawk-vulkan-review/.deps/native/radv-release/PROVENANCE.txt'
         if provenance.exists():
             provenance.replace(provenance.with_suffix('.base.txt'))
     print(f'RADV initialization diagnostic {relative} sha256={hashlib.sha256(adapted.encode()).hexdigest()}')
+print(f'RADV adaptation digest {digest}')

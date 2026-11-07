@@ -348,6 +348,18 @@ int CurrentCpuClock(clockid_t* clock, bool process = false) {
     // Native titles must use the imported kernel APIs. Firmware rejects direct
     // syscalls from the title. Qualification below rejects unusable CPU clocks.
     if (process) { *clock = CLOCK_PROCESS_CPUTIME_ID; return 0; }
+    // The console's pthread_getcpuclockid gives the clock of the thread that reads it
+    // (CLOCK_THREAD_CPUTIME_ID, 14): read from the reporting thread, every worker had that
+    // thread's time (EDEN_THREAD_CPU all equal). FreeBSD's clock of one thread is its kernel ID
+    // with the CPU clock bit (MAKE_THREAD_CPUCLOCK), read through the imported clock_gettime. The
+    // ID is the first member of the thread's pthread, as in FreeBSD's libthr (`long tid`); nothing
+    // exports it to a native title. CheckCpuClocks below tells whether the clocks it gives work.
+    long tid = 0;
+    std::memcpy(&tid, reinterpret_cast<const void*>(pthread_self()), sizeof(tid));
+    if (tid > 0 && tid < 0x40000000) {
+        *clock = static_cast<clockid_t>(0x80000000u | static_cast<unsigned>(tid));
+        return 0;
+    }
     return pthread_getcpuclockid(pthread_self(), clock);
 #else
     return process ? clock_getcpuclockid(0, clock) : pthread_getcpuclockid(pthread_self(), clock);
@@ -597,6 +609,16 @@ void ReportMemoryAt(const char* when) {
 // every 20 s with the pool's summary): which of the guest cores and the GPU thread is the one that
 // holds a game back.
 static void ReportThreadCpu() {
+    // Only with clocks that read another thread's time (EDEN_PERF_CPU_CLOCK_CHECK valid=1).
+    if (!cpu_clocks_valid) {
+        static bool said = false;
+        if (!said) {
+            said = true;
+            std::fprintf(stderr, "EDEN_THREAD_CPU unavailable: this console's thread clocks cannot be read "
+                                 "from another thread (EDEN_PERF_CPU_CLOCK_CHECK)\n");
+        }
+        return;
+    }
     static std::array<long long, names.size()> last_cpu{};
     static long long last_mono = 0;
     const long long mono = ClockNs(CLOCK_MONOTONIC);

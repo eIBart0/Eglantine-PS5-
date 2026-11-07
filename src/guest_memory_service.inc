@@ -47,7 +47,8 @@ struct Counters {
     std::atomic<std::uint64_t> returns_clear{0}, returns_free{0}, returns_scan{0}, dedup{0};
     std::atomic<std::uint64_t> reserve_used{0}, host_reserve_used{0}, failures{0}, passes{0}, scan_ns{0};
     std::atomic<std::uint64_t> fined{0}, unfined{0}, fine_failures{0};
-    std::atomic<std::uint64_t> swap_outs{0}, swap_ins{0}, swap_failures{0}, swap_in_us{0};
+    std::atomic<std::uint64_t> swap_outs{0}, swap_ins{0}, swap_failures{0}, swap_in_us{0}, swap_out_us{0};
+    std::atomic<std::uint64_t> swap_waits_for_reads{0};
 };
 Counters counters;
 void ResetCounters() noexcept {
@@ -55,7 +56,8 @@ void ResetCounters() noexcept {
                           &counters.returns_clear, &counters.returns_free, &counters.returns_scan, &counters.dedup,
                           &counters.reserve_used, &counters.host_reserve_used, &counters.failures, &counters.passes, &counters.scan_ns,
                           &counters.fined, &counters.unfined, &counters.fine_failures,
-                          &counters.swap_outs, &counters.swap_ins, &counters.swap_failures, &counters.swap_in_us})
+                          &counters.swap_outs, &counters.swap_ins, &counters.swap_failures, &counters.swap_in_us,
+                          &counters.swap_out_us, &counters.swap_waits_for_reads})
         counter->store(0, std::memory_order_relaxed);
 }
 
@@ -196,20 +198,24 @@ int UnshareBlock(std::int64_t physical) noexcept {
 // The PS5 gives apps no swap, so the service makes one for the guest's memory, which is most of
 // what a large game holds (Mario Kart World: 4.0 GiB, 5.9 in a race, of a 12 GiB pool it shares
 // with the GPU). Only while the pool is short (the graphics caches say so, a write waits for a
-// block, or the reserve cannot be refilled) does the keeper (every 100 ms) write slots out, at
-// most 16 a pass. It takes slots the graphics caches called cold whole: the memory of textures
-// they uploaded (HostMemory::HintCold), which the GPU now has its own copy of and the game rarely
-// reads again. A slot read back waits 4, 8 ... 256 s before it may go out again, and its hints
-// count again from nothing. headless/main.cpp names the file (EDEN_GUEST_SWAP_FILE) and its size
+// block, or the reserve cannot be refilled to half) does the keeper (every 100 ms) write slots
+// out, at most 4 a pass, and none in the 2 s after a slot was read back: in 01.219.021 a read
+// waited behind the keeper's writes (16 a pass, about 300 ms for each 2 MiB read). It takes only
+// slots the graphics caches called cold whole: the memory of textures they uploaded
+// (HostMemory::HintCold), which the GPU now has its own copy of and the game rarely reads again.
+// A slot read back waits 30, 60 ... 960 s before it may go out again (2 of 3 slots came back in
+// Mario Kart World), and its hints count again from nothing. headless/main.cpp names the file (EDEN_GUEST_SWAP_FILE) and its size
 // (EDEN_GUEST_SWAP_MIB, 4096 by default); testing switch "SSD swap" (EDEN_GUEST_SWAP=0: off).
 constexpr std::size_t SwapMostSlots = 8192; // 16 GiB
-constexpr unsigned SwapPerPass = 16;
+constexpr unsigned SwapPerPass = 4;
 int swap_fd = -1;
 std::size_t swap_slots = 0;
 std::uint64_t swap_used[SwapMostSlots / 64];
 std::atomic_flag swap_lock = ATOMIC_FLAG_INIT;
 std::atomic<std::uint32_t> swap_tick{0};
 std::atomic<bool> pool_short{false};
+// swap_tick when a slot was last read back (the keeper writes none for 2 s after).
+std::atomic<std::uint32_t> swap_read_tick{0};
 char swap_path[256];
 
 void Fence(std::uintptr_t at) noexcept;   // the scanner's, below
@@ -439,10 +445,12 @@ bool SwapIn(SparseRange& range, std::size_t slot) noexcept {
     counters.swap_in_us.fetch_add(static_cast<std::uint64_t>((end.tv_sec - begin.tv_sec) * 1000000LL +
                                                              (end.tv_nsec - begin.tv_nsec) / 1000),
                                   std::memory_order_relaxed);
-    // Each time it comes back it stays longer: 4, 8 ... 256 s (times in bits 12-15 of fine[]).
+    // Each time it comes back it stays longer: 30, 60 ... 960 s (times in bits 12-15 of fine[]).
     const unsigned times = std::min<unsigned>(((range.fine[slot] >> 12) & 0xf) + 1, 6);
     range.fine[slot] = static_cast<std::uint16_t>((range.fine[slot] & 0x0fff) | (times << 12));
-    range.swap_after[slot] = swap_tick.load(std::memory_order_relaxed) + (20u << times);
+    const std::uint32_t now_tick = swap_tick.load(std::memory_order_relaxed);
+    range.swap_after[slot] = now_tick + (300u << (times - 1));
+    swap_read_tick.store(now_tick, std::memory_order_relaxed);
     __atomic_store_n(&range.cold[slot], 0u, __ATOMIC_RELAXED);
     return true;
 #else
@@ -461,6 +469,8 @@ bool SwapOut(SparseRange& range, std::size_t slot) noexcept {
     if (entry < 0) return false;
     const std::uintptr_t at = SlotAddress(range, slot);
     Fence(at);
+    timespec write_begin{}, write_end{};
+    clock_gettime(CLOCK_MONOTONIC, &write_begin);
     std::size_t done = 0;
     while (done < SparseSlot) {
         const ssize_t put = pwrite(swap_fd, reinterpret_cast<const std::uint8_t*>(at) + done, SparseSlot - done,
@@ -469,6 +479,10 @@ bool SwapOut(SparseRange& range, std::size_t slot) noexcept {
         if (put <= 0) break;
         done += static_cast<std::size_t>(put);
     }
+    clock_gettime(CLOCK_MONOTONIC, &write_end);
+    counters.swap_out_us.fetch_add(static_cast<std::uint64_t>((write_end.tv_sec - write_begin.tv_sec) * 1000000LL +
+                                                              (write_end.tv_nsec - write_begin.tv_nsec) / 1000),
+                                   std::memory_order_relaxed);
     bool hidden = done == SparseSlot && MapSlot(at, PROT_NONE, zero_block);
     if (done == SparseSlot && !hidden) {
         // No mapping without access to the zero block: the address space alone, reserved again.
@@ -916,15 +930,22 @@ void SwapSome() noexcept {
     if (range == nullptr || range->cold == nullptr || swap_fd < 0) return;
     const bool short_now = pool_short.load(std::memory_order_relaxed) ||
                            memory_waiters.load(std::memory_order_acquire) != 0 ||
-                           reserve_count.load(std::memory_order_relaxed) < ReserveBlocks;
+                           reserve_count.load(std::memory_order_relaxed) < ReserveBlocks / 2;
     if (!short_now) return;
+    // A slot was read back in the last 2 s: the game is using what went out, and a write now
+    // would make the next read wait behind it.
+    if (tick - swap_read_tick.load(std::memory_order_relaxed) < 20 &&
+        counters.swap_ins.load(std::memory_order_relaxed) != 0) {
+        counters.swap_waits_for_reads.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     const std::size_t slots = (range->end - range->begin.load(std::memory_order_relaxed)) / SparseSlot;
     static std::size_t cursor = 0;
     unsigned out = 0;
     for (std::size_t looked = 0; looked < slots && out < SwapPerPass; ++looked) {
         const std::size_t slot = cursor++ % slots;
         if (SlotState(*range, slot) != SlotOwn || range->swap_after[slot] > tick ||
-            __atomic_load_n(&range->cold[slot], __ATOMIC_RELAXED) < SparseSlot * 3 / 4)
+            __atomic_load_n(&range->cold[slot], __ATOMIC_RELAXED) < SparseSlot)
             continue;
         LockSlot(*range, slot);
         const std::uint8_t state = SlotState(*range, slot);
@@ -1135,11 +1156,15 @@ void ServiceReport(SparseRange& range, const char* when) noexcept {
     if (length > 0) Report(line);
     if (swap_fd >= 0 || counters.swap_outs.load(std::memory_order_relaxed) != 0) {
         const auto ins = counters.swap_ins.load(std::memory_order_relaxed);
+        const auto outs = counters.swap_outs.load(std::memory_order_relaxed);
         const int swap_length = std::snprintf(line, sizeof(line),
-            "EDEN_SWAP %s on the SSD=%zuMiB out=%llu in=%llu failures=%llu read_back_ms_each=%.2f\n", when,
+            "EDEN_SWAP %s on the SSD=%zuMiB out=%llu in=%llu failures=%llu read_back_ms_each=%.2f "
+            "write_ms_each=%.2f passes_held_for_reads=%llu\n", when,
             out * (SparseSlot >> 20), (unsigned long long)counters.swap_outs.load(), (unsigned long long)ins,
             (unsigned long long)counters.swap_failures.load(),
-            ins ? counters.swap_in_us.load() / 1000.0 / static_cast<double>(ins) : 0.0);
+            ins ? counters.swap_in_us.load() / 1000.0 / static_cast<double>(ins) : 0.0,
+            outs ? counters.swap_out_us.load() / 1000.0 / static_cast<double>(outs) : 0.0,
+            (unsigned long long)counters.swap_waits_for_reads.load());
         if (swap_length > 0) Report(line);
     }
     // Who wrote the slots that were promoted: the largest places (offsets in the app's image).

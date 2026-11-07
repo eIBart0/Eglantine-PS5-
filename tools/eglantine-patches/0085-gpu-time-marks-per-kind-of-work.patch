@@ -1,0 +1,179 @@
+diff --git a/src/video_core/renderer_vulkan/vk_blit_screen.cpp b/src/video_core/renderer_vulkan/vk_blit_screen.cpp
+index d4a3c8972b..7ad9053345 100644
+--- a/src/video_core/renderer_vulkan/vk_blit_screen.cpp
++++ b/src/video_core/renderer_vulkan/vk_blit_screen.cpp
+@@ -16,6 +16,7 @@
+ #include "video_core/renderer_vulkan/vk_blit_screen.h"
+ #include "video_core/renderer_vulkan/vk_present_manager.h"
+ #include "video_core/renderer_vulkan/vk_scheduler.h"
++#include "video_core/renderer_vulkan/vk_gpu_time_marks.h"
+ 
+ namespace Vulkan {
+ 
+@@ -108,6 +109,7 @@ void BlitScreen::DrawToFrame(const Device& device, RasterizerVulkan& rasterizer,
+                              const Layout::FramebufferLayout& layout,
+                              size_t current_swapchain_image_count,
+                              VkFormat current_swapchain_view_format) {
++    GpuTimeMarks::Mark(scheduler, GpuTimeMarks::Present);
+     bool resource_update_required = false;
+     bool presentation_recreate_required = false;
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_compute_pass.cpp b/src/video_core/renderer_vulkan/vk_compute_pass.cpp
+index 5902b7d8f5..7bd3a4da08 100644
+--- a/src/video_core/renderer_vulkan/vk_compute_pass.cpp
++++ b/src/video_core/renderer_vulkan/vk_compute_pass.cpp
+@@ -41,6 +41,7 @@
+ #include "video_core/textures/decoders.h"
+ #include "video_core/vulkan_common/vulkan_device.h"
+ #include "video_core/vulkan_common/vulkan_wrapper.h"
++#include "video_core/renderer_vulkan/vk_gpu_time_marks.h"
+ 
+ namespace Vulkan {
+ 
+@@ -670,6 +671,7 @@ void ASTCDecoderPass::AssembleInto(const VideoCommon::ImageInfo& info, u32 skip,
+         VideoCore::Surface::DefaultBlockHeight(info.format),
+     };
+     scheduler.RequestOutsideRenderPassOperationContext();
++    GpuTimeMarks::Mark(scheduler, GpuTimeMarks::Pass);
+     const VkPipeline vk_pipeline = *pipeline;
+     const VkImageAspectFlags aspect_mask = target.aspect_mask;
+     const VkImage vk_image = target.image;
+diff --git a/src/video_core/renderer_vulkan/vk_compute_pipeline.h b/src/video_core/renderer_vulkan/vk_compute_pipeline.h
+index d7982b0922..54866c7f76 100644
+--- a/src/video_core/renderer_vulkan/vk_compute_pipeline.h
++++ b/src/video_core/renderer_vulkan/vk_compute_pipeline.h
+@@ -57,6 +57,11 @@ public:
+         return static_cast<bool>(pipeline);
+     }
+ 
++    /// The guest program's hash (the GPU time of compute work is reported per shader).
++    [[nodiscard]] u64 ShaderHash() const noexcept {
++        return shader_hash;
++    }
++
+ private:
+     /// Builds the pipeline once, on whichever thread gets here first.
+     void RunBuild();
+diff --git a/src/video_core/renderer_vulkan/vk_gpu_time_marks.h b/src/video_core/renderer_vulkan/vk_gpu_time_marks.h
+new file mode 100644
+index 0000000000..2e6cdfe21e
+--- /dev/null
++++ b/src/video_core/renderer_vulkan/vk_gpu_time_marks.h
+@@ -0,0 +1,53 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <atomic>
++
++#include "common/common_types.h"
++#include "video_core/vulkan_common/vulkan_wrapper.h"
++
++namespace Vulkan::GpuTimeMarks {
++
++/// The kinds of work the GPU time of a submission is split into. A mark starts a kind; it lasts
++/// until the next mark or the end of the submission.
++enum Kind : u32 {
++    Other,    ///< from the start of a submission to its first mark
++    Draw,     ///< graphics draws
++    MeshDraw, ///< task and mesh draws
++    Compute,  ///< the guest's compute dispatches, split by shader (the key)
++    Pass,     ///< the emulator's own compute passes (ASTC decoding)
++    Clear,    ///< clears
++    Present,  ///< the frame's way to the screen (scaling, filters)
++    Count,
++};
++
++/// Set by a frontend that measures the GPU's time (the PS5 port's gpu_time_probe.inc): `write`
++/// puts a timestamp into the command buffer for a mark, on the Vulkan worker thread.
++inline std::atomic<bool> active{false};
++inline void (*write)(VkCommandBuffer cmdbuf, u32 kind, u64 key) = nullptr;
++
++/// The kind recorded last, so a run of work of one kind takes one mark.
++inline u32 last_kind = ~0U;
++inline u64 last_key = ~u64{0};
++
++/// A submission ends: the next mark starts the next command buffer's first kind.
++inline void OnSubmit() noexcept {
++    last_kind = ~0U;
++}
++
++template <typename SchedulerT>
++inline void Mark(SchedulerT& scheduler, u32 kind, u64 key = 0) {
++    if (!active.load(std::memory_order_relaxed) || (kind == last_kind && key == last_key)) {
++        return;
++    }
++    last_kind = kind;
++    last_key = key;
++    scheduler.Record([kind, key](vk::CommandBuffer cmdbuf) {
++        if (write != nullptr) {
++            write(*cmdbuf, kind, key);
++        }
++    });
++}
++
++} // namespace Vulkan::GpuTimeMarks
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index b3320d8367..44451dc09c 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -52,6 +52,7 @@
+ #include "video_core/renderer_vulkan/vk_state_tracker.h"
+ #include "video_core/renderer_vulkan/vk_texture_cache.h"
+ #include "video_core/renderer_vulkan/vk_update_descriptor.h"
++#include "video_core/renderer_vulkan/vk_gpu_time_marks.h"
+ #include "video_core/shader_cache.h"
+ #include "video_core/texture_cache/texture_cache_base.h"
+ #include "video_core/vulkan_common/vulkan_device.h"
+@@ -470,6 +471,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
+     }
+     // Task/mesh pipelines: the draw's vertex count is the number of task workgroups.
+     mesh_draw = pipeline->IsMeshPipeline();
++    GpuTimeMarks::Mark(scheduler, mesh_draw ? GpuTimeMarks::MeshDraw : GpuTimeMarks::Draw);
+     // EDEN_NX2_NO_MESH=1: skip task/mesh draws as before they were supported (A/B comparisons).
+     // EDEN_NX2_NO_MESH_FILE=<path>: skip them while that file exists (checked every 1024 draws),
+     // to compare the same scene with and without them in one run.
+@@ -942,6 +944,7 @@ void RasterizerVulkan::DrawTexture() {
+         gpu.TickWork();
+     };
+     FlushWork();
++    GpuTimeMarks::Mark(scheduler, GpuTimeMarks::Draw);
+ 
+     std::scoped_lock l{texture_cache.mutex};
+     texture_cache.SynchronizeDescriptors(false);
+@@ -994,6 +997,7 @@ void RasterizerVulkan::Clear(u32 layer_count) {
+     }
+     TraceWindowTarget(*maxwell3d, *gpu_memory, "clear", layer_count);
+     FlushWork();
++    GpuTimeMarks::Mark(scheduler, GpuTimeMarks::Clear);
+     gpu_memory->FlushCaching();
+ 
+     auto& regs = maxwell3d->regs;
+@@ -1210,6 +1214,7 @@ void RasterizerVulkan::DispatchCompute() {
+         if (kepler_compute->IsNativeMode()) throw Shader::RuntimeError("Native compute resources unavailable");
+         return;
+     }
++    GpuTimeMarks::Mark(scheduler, GpuTimeMarks::Compute, pipeline->ShaderHash());
+ 
+     const auto& qmd{kepler_compute->launch_description};
+     // Earlier writes must be visible to the dispatch, its indirect arguments included, and what it
+diff --git a/src/video_core/renderer_vulkan/vk_scheduler.cpp b/src/video_core/renderer_vulkan/vk_scheduler.cpp
+index ffa96ee6cd..95f8ae0d5e 100644
+--- a/src/video_core/renderer_vulkan/vk_scheduler.cpp
++++ b/src/video_core/renderer_vulkan/vk_scheduler.cpp
+@@ -23,6 +23,7 @@
+ #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
+ #include "video_core/renderer_vulkan/vk_master_semaphore.h"
+ #include "video_core/renderer_vulkan/vk_scheduler.h"
++#include "video_core/renderer_vulkan/vk_gpu_time_marks.h"
+ #include "video_core/renderer_vulkan/vk_state_tracker.h"
+ #include "video_core/renderer_vulkan/vk_texture_cache.h"
+ #include "video_core/vulkan_common/vulkan_device.h"
+@@ -433,6 +434,7 @@ void Scheduler::AllocateWorkerCommandBuffer() {
+ }
+ 
+ u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore) {
++    GpuTimeMarks::OnSubmit();
+     EndPendingOperations();
+     InvalidateState();
+ 

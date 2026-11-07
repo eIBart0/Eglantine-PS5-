@@ -1,0 +1,65 @@
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+index bfb73cb9a6..0b8ce892ea 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+@@ -104,6 +104,10 @@ public:
+     [[nodiscard]] bool IsMeshPipeline() const noexcept {
+         return stage_infos[0].is_task || stage_infos[0].is_mesh;
+     }
++    /// A task/mesh pipeline that starts with a task shader (in the vertex slot).
++    [[nodiscard]] bool IsTaskPipeline() const noexcept {
++        return stage_infos[0].is_task;
++    }
+     GraphicsPipeline& operator=(GraphicsPipeline&&) noexcept = delete;
+     GraphicsPipeline(GraphicsPipeline&&) noexcept = delete;
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 44451dc09c..49efd32cc5 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -475,7 +475,17 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
+     // EDEN_NX2_NO_MESH=1: skip task/mesh draws as before they were supported (A/B comparisons).
+     // EDEN_NX2_NO_MESH_FILE=<path>: skip them while that file exists (checked every 1024 draws),
+     // to compare the same scene with and without them in one run.
+-    static const bool no_mesh_always{std::getenv("EDEN_NX2_NO_MESH") != nullptr};
++    // EDEN_NX2_NO_MESH=task skips only the draws that start with a task shader, =mesh only those
++    // without one: which of the two hangs the PS5's GPU.
++    static const int no_mesh_part = [] {
++        const char* const value = std::getenv("EDEN_NX2_NO_MESH");
++        if (value == nullptr) {
++            return 0;
++        }
++        const std::string_view text{value};
++        return text == "task" ? 1 : text == "mesh" ? 2 : 3;
++    }();
++    static const bool no_mesh_always{no_mesh_part == 3};
+     static const char* const no_mesh_file{std::getenv("EDEN_NX2_NO_MESH_FILE")};
+     static bool no_mesh{no_mesh_always};
+     static u32 no_mesh_check{};
+@@ -490,12 +500,24 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
+         return value != nullptr && value[0] != '0';
+     }();
+     const bool no_mesh_title{!mkw_mesh && Settings::GetCurrentProgramID() == 0x0400C3F00006E000ULL};
+-    if (mesh_draw && (no_mesh || no_mesh_title || !device.IsExtMeshShaderSupported())) {
+-        report_failure(no_mesh         ? "EDEN_NX2_NO_MESH"
++    const bool task_draw{mesh_draw && pipeline->IsTaskPipeline()};
++    const bool part_skipped{(no_mesh_part == 1 && task_draw) ||
++                            (no_mesh_part == 2 && mesh_draw && !task_draw)};
++    if (mesh_draw && (no_mesh || part_skipped || no_mesh_title || !device.IsExtMeshShaderSupported())) {
++        report_failure(no_mesh || part_skipped ? "EDEN_NX2_NO_MESH"
+                        : no_mesh_title ? "off for Mario Kart World"
+                                        : "no VK_EXT_mesh_shader");
+         return;
+     }
++    if (mesh_draw) {
++        static u32 mesh_draws_logged{};
++        if (mesh_draws_logged < 24) {
++            ++mesh_draws_logged;
++            LOG_INFO(Render_Vulkan, "Task/mesh draw {}: {}, {} workgroups, pipeline {}",
++                     mesh_draws_logged, task_draw ? "task and mesh shaders" : "mesh shader only",
++                     maxwell3d->draw_manager.draw_state.vertex_buffer.count, fmt::ptr(pipeline));
++        }
++    }
+     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+     // update engine as channel may be different.
+     pipeline->SetEngine(maxwell3d, gpu_memory);

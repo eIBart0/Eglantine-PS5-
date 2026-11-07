@@ -47,5 +47,6 @@ bash "$vulkan/tools/setup-native-dependencies.sh"
 bash "$vulkan/tools/build-radv.sh" release
 python3 "$root/tools/patch-radv-wsi.py"
 bash "$vulkan/tools/build-radv.sh" release
-sha256sum "$vulkan/.deps/work/radv-src/src/vulkan/wsi/wsi_common_videoout.c" \
-    > "$vulkan/.deps/native/radv-release/EDEN_WSI_SHA256"
+# The digest of everything tools/patch-radv-wsi.py adapted (the display code and the other files):
+# tools/prepare-build.sh builds the driver again when it changes.
+python3 "$root/tools/patch-radv-wsi.py" --digest > "$vulkan/.deps/native/radv-release/EDEN_WSI_SHA256"

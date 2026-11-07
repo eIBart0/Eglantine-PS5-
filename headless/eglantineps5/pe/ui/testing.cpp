@@ -58,10 +58,18 @@ constexpr Switch kSwitches[] = {
      3},
     {TR("Task and mesh draws"),
      TR("Off by default in Mario Kart World, where they hang the GPU. Off skips them in every game; "
-        "On draws them in Mario Kart World too."),
+        "On draws them in Mario Kart World too; Task off skips only those with a task shader."),
      {"EDEN_NX2_NO_MESH", "EDEN_NX2_MKW_MESH"},
-     {{{TR("Default"), {nullptr, nullptr}}, {TR("Off"), {"1", nullptr}}, {TR("On"), {nullptr, "1"}}}},
-     3},
+     {{{TR("Default"), {nullptr, nullptr}}, {TR("Off"), {"1", nullptr}}, {TR("On"), {nullptr, "1"}},
+       {TR("Task off"), {"task", nullptr}}}},
+     4},
+    {TR("Mesh shader parts"),
+     TR("A mesh shader whose primitives do not fit in one go runs in parts on the PS5. By default each "
+        "part runs the shader again. Shared: the first part shares its results and the others wait "
+        "for it on the GPU, as before; the suspect in the GPU hangs of Zelda and Mario Kart World."),
+     {"RADV_PS5_MS_PUBLISH", nullptr},
+     {{{TR("Default"), {nullptr, nullptr}}, {TR("Shared (as before)"), {"1", nullptr}}}},
+     2},
     {TR("Split GPU thread"),
      TR("Runs the GPU's commands on two threads. Off uses one: slower, and a test when a game freezes "
         "or crashes in the GPU."),

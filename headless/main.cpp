@@ -538,6 +538,11 @@ int main(int argc, char** argv) {
                 std::printf("EDEN_ENV %s\n", entry.c_str());
             }
         }
+        // Testing switch "GPU thread profile" also times the GPU's own work, per kind and per
+        // compute shader (gpu_time_probe.inc: EDEN_GPU_TIME, EDEN_GPU_KINDS, EDEN_GPU_COMPUTE).
+        if (const char* const profile = std::getenv("EDEN_NX2_GPU_PROFILE"); profile != nullptr && profile[0] == '1') {
+            Eden::DevVulkan::gpu_time = true;
+        }
         // The console's defaults for the core's switches (env.txt above wins). Without a fastmem
         // arena every guest read of a GPU-tracked page is a call; a Switch 2 title's reads of
         // pages with nothing to flush answer on the guest core instead of waiting for the GPU
