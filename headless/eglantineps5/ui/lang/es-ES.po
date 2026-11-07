@@ -2586,3 +2586,15 @@ msgstr "En la PS5, un mesh shader cuyas primitivas no caben de una vez se ejecut
 #: pe/ui/testing.cpp
 msgid "Shared (as before)"
 msgstr "Compartidas (como antes)"
+
+#: pe/ui/testing.cpp
+msgid "Mesh shaders"
+msgstr "Mesh shaders"
+
+#: pe/ui/testing.cpp
+msgid "By default task and mesh shaders run as compute shaders followed by ordinary draws, as on GPUs without mesh shaders: the PS5's driver hung on them. Driver: its own mesh path, as before."
+msgstr "Por defecto los task y mesh shaders se ejecutan como shaders de compute seguidos de dibujos normales, como en las GPU sin mesh shaders: el driver de la PS5 se colgaba con ellos. «Driver»: su propio camino para los mesh, como antes."
+
+#: pe/ui/testing.cpp
+msgid "Driver (as before)"
+msgstr "Driver (como antes)"

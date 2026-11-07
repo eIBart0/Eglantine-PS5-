@@ -551,7 +551,12 @@ int main(int argc, char** argv) {
         for (const auto& [name, value] : {std::pair{"EDEN_NX2_UNSAFE_PREEMPTIVE_READS", "1"},
                                           std::pair{"EDEN_PS5_READ_SPIN_US", "300"},
                                           std::pair{"EDEN_PS5_GPU_SPIN_US", "300"},
-                                          std::pair{"EDEN_PS5_WORKER_SPIN_US", "300"}}) {
+                                          std::pair{"EDEN_PS5_WORKER_SPIN_US", "300"},
+                                          // Task and mesh draws run through compute shaders and
+                                          // ordinary draws (core patch 0088): every mesh draw of
+                                          // Zelda and Mario Kart World hung the PS5's GPU on the
+                                          // driver's own mesh path (01.219.023).
+                                          std::pair{"EDEN_NX2_FORCE_MESH_FALLBACK", "1"}}) {
             setenv(name, value, 0);
         }
 #ifdef EDEN_MKW_DIAGNOSTICS

@@ -63,6 +63,13 @@ constexpr Switch kSwitches[] = {
      {{{TR("Default"), {nullptr, nullptr}}, {TR("Off"), {"1", nullptr}}, {TR("On"), {nullptr, "1"}},
        {TR("Task off"), {"task", nullptr}}}},
      4},
+    {TR("Mesh shaders"),
+     TR("By default task and mesh shaders run as compute shaders followed by ordinary draws, as on "
+        "GPUs without mesh shaders: the PS5's driver hung on them. Driver: its own mesh path, as "
+        "before."),
+     {"EDEN_NX2_FORCE_MESH_FALLBACK", nullptr},
+     {{{TR("Default"), {nullptr, nullptr}}, {TR("Driver (as before)"), {"0", nullptr}}}},
+     2},
     {TR("Mesh shader parts"),
      TR("A mesh shader whose primitives do not fit in one go runs in parts on the PS5. By default each "
         "part runs the shader again. Shared: the first part shares its results and the others wait "

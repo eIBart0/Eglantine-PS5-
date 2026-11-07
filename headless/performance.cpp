@@ -330,6 +330,8 @@ void PinWorker(unsigned index, cpuset_t& affinity) {
 }
 #endif
 bool cpu_clocks_valid = false;
+// A worker's clock read from another thread gives that worker's time (EDEN_THREAD_CPU).
+bool thread_clocks_valid = false;
 bool owner_cpu_clock_valid = false;
 std::atomic<unsigned> sample_epoch{};
 struct CpuSample {
@@ -408,9 +410,15 @@ void CheckCpuClocks() {
     const auto busy = cpu_busy - cpu_begin;
     const auto idle = cpu_idle - cpu_busy;
     const auto process_sleep = process_end - process_idle;
+    // The process clock also counts the app's other threads, so only cpu_clocks_valid asks
+    // it to stand still while the worker sleeps (01.219.023: the worker's clock read right, busy
+    // 19.9 ms and idle 0.17 ms, and the process's 20 ms of other threads failed the check).
+    thread_clocks_valid = !worker_error && cpu_begin >= 0 && busy >= 1'000'000 && idle >= 0 &&
+        idle < busy / 4 + 1'000'000;
     cpu_clocks_valid = !worker_error && !process_error && cpu_begin >= 0 && process_idle >= 0 &&
         busy >= 1'000'000 && idle >= 0 && idle < busy / 4 + 1'000'000 &&
         process_sleep >= 0 && process_sleep < 6'000'000;
+    std::printf("EDEN_PERF_THREAD_CLOCK_CHECK valid=%d\n", thread_clocks_valid);
     std::printf("EDEN_PERF_CPU_CLOCK_CHECK valid=%d worker_error=%d process_error=%d "
                 "worker_clock=%d process_clock=%d busy_ns=%lld idle_ns=%lld process_sleep_ns=%lld\n",
                 cpu_clocks_valid, worker_error, process_error, int(worker_clock), int(process_clock),
@@ -609,13 +617,13 @@ void ReportMemoryAt(const char* when) {
 // every 20 s with the pool's summary): which of the guest cores and the GPU thread is the one that
 // holds a game back.
 static void ReportThreadCpu() {
-    // Only with clocks that read another thread's time (EDEN_PERF_CPU_CLOCK_CHECK valid=1).
-    if (!cpu_clocks_valid) {
+    // Only with clocks that read another thread's time (EDEN_PERF_THREAD_CLOCK_CHECK valid=1).
+    if (!thread_clocks_valid) {
         static bool said = false;
         if (!said) {
             said = true;
             std::fprintf(stderr, "EDEN_THREAD_CPU unavailable: this console's thread clocks cannot be read "
-                                 "from another thread (EDEN_PERF_CPU_CLOCK_CHECK)\n");
+                                 "from another thread (EDEN_PERF_THREAD_CLOCK_CHECK)\n");
         }
         return;
     }
