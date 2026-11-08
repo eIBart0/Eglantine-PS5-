@@ -1,0 +1,112 @@
+diff --git a/src/video_core/CMakeLists.txt b/src/video_core/CMakeLists.txt
+index dc498c61..fce996d4 100644
+--- a/src/video_core/CMakeLists.txt
++++ b/src/video_core/CMakeLists.txt
+@@ -156,6 +156,7 @@ add_library(video_core STATIC
+     renderer_vulkan/blit_image.h
+     renderer_vulkan/fixed_pipeline_state.cpp
+     renderer_vulkan/fixed_pipeline_state.h
++    renderer_vulkan/framebuffer_limits.h
+     renderer_vulkan/maxwell_to_vk.cpp
+     renderer_vulkan/maxwell_to_vk.h
+     renderer_vulkan/pipeline_helper.h
+diff --git a/src/video_core/renderer_vulkan/framebuffer_limits.h b/src/video_core/renderer_vulkan/framebuffer_limits.h
+new file mode 100644
+index 00000000..d11cf198
+--- /dev/null
++++ b/src/video_core/renderer_vulkan/framebuffer_limits.h
+@@ -0,0 +1,27 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <algorithm>
++
++#include "common/common_types.h"
++
++namespace Vulkan {
++
++struct FramebufferSize {
++    u32 width;
++    u32 height;
++    u32 layers;
++};
++
++// Draws without attachments take their size from the surface clip, which games leave at
++// 32768x32768. Apple GPUs allow 16384, and Metal loses the device on a larger framebuffer.
++constexpr FramebufferSize ClampFramebufferSize(FramebufferSize size, FramebufferSize max) {
++    return {
++        (std::max)(1U, (std::min)(size.width, max.width)),
++        (std::max)(1U, (std::min)(size.height, max.height)),
++        (std::max)(1U, (std::min)(size.layers, max.layers)),
++    };
++}
++
++} // namespace Vulkan
+diff --git a/src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp b/src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp
+index e8db3c1a..5d91cec9 100644
+--- a/src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp
++++ b/src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp
+@@ -40,6 +40,12 @@ constexpr VkDeviceSize MAX_STREAM_BUFFER_SIZE = 128_MiB;
+ constexpr VkDeviceSize MAX_STREAM_BUFFER_SIZE = 128_MiB;
+ #endif
+ 
++// Unused space after the end of the stream buffer. Constant buffers are bound from it and the
++// shaders declare each one at its full 64 KiB, so Metal checks 64 KiB from the binding offset
++// against the end of the buffer ("argument c3[0] ... has space for 26624 bytes, but argument has a
++// length(65536)"). The tail is never handed out, so every binding has the full 64 KiB behind it.
++constexpr VkDeviceSize STREAM_BUFFER_TAIL = 64_KiB;
++
+ size_t GetStreamBufferSize(const Device& device) {
+     if (!device.HasDebuggingToolAttached()) {
+         if (device.IsIntegrated()) {
+@@ -88,7 +94,7 @@ StagingBufferPool::StagingBufferPool(const Device& device_, MemoryAllocator& mem
+         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+         .pNext = nullptr,
+         .flags = 0,
+-        .size = stream_buffer_size,
++        .size = stream_buffer_size + STREAM_BUFFER_TAIL,
+         .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                  VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index 5cfca34a..71f40fa4 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -29,6 +29,7 @@
+ 
+ #include "video_core/engines/fermi_2d.h"
+ #include "video_core/renderer_vulkan/blit_image.h"
++#include "video_core/renderer_vulkan/framebuffer_limits.h"
+ #include "video_core/renderer_vulkan/maxwell_to_vk.h"
+ #include "video_core/renderer_vulkan/vk_compute_pass.h"
+ #include "video_core/renderer_vulkan/vk_render_pass_cache.h"
+@@ -4610,6 +4611,12 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
+     runtime_ptr = &runtime;
+     render_area.width = (std::min)(render_area.width, width);
+     render_area.height = (std::min)(render_area.height, height);
++    const FramebufferSize size = ClampFramebufferSize(
++        {render_area.width, render_area.height, static_cast<u32>((std::max)(num_layers, 1))},
++        {runtime.device.GetMaxFramebufferWidth(), runtime.device.GetMaxFramebufferHeight(),
++         runtime.device.GetMaxFramebufferLayers()});
++    render_area = VkExtent2D{.width = size.width, .height = size.height};
++    num_layers = static_cast<s32>(size.layers);
+ 
+     if (do_resolve_color) {
+         const u32 layers = static_cast<u32>((std::max)(num_layers, 1));
+diff --git a/src/video_core/vulkan_common/vulkan_device.h b/src/video_core/vulkan_common/vulkan_device.h
+index 9cbe7e03..ff9cb18b 100644
+--- a/src/video_core/vulkan_common/vulkan_device.h
++++ b/src/video_core/vulkan_common/vulkan_device.h
+@@ -420,7 +420,10 @@ public:
+     FN_MAX_LIMIT_ELEM(DescriptorSetStorageBuffersDynamic) \
+     FN_MAX_LIMIT_ELEM(DescriptorSetSampledImages) \
+     FN_MAX_LIMIT_ELEM(DescriptorSetStorageImages) \
+-    FN_MAX_LIMIT_ELEM(DescriptorSetInputAttachments)
++    FN_MAX_LIMIT_ELEM(DescriptorSetInputAttachments) \
++    FN_MAX_LIMIT_ELEM(FramebufferWidth) \
++    FN_MAX_LIMIT_ELEM(FramebufferHeight) \
++    FN_MAX_LIMIT_ELEM(FramebufferLayers)
+ #define FN_MAX_LIMIT_ELEM(name) \
+     u32 GetMax##name() const { return properties.properties.limits.max##name; }
+ FN_MAX_LIMIT_LIST

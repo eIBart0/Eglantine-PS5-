@@ -1,0 +1,349 @@
+diff --git a/src/video_core/renderer_vulkan/fixed_pipeline_state.cpp b/src/video_core/renderer_vulkan/fixed_pipeline_state.cpp
+index babea58b..c453b300 100644
+--- a/src/video_core/renderer_vulkan/fixed_pipeline_state.cpp
++++ b/src/video_core/renderer_vulkan/fixed_pipeline_state.cpp
+@@ -254,19 +254,20 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
+         dynamic_state.Refresh2(regs, topology_, extended_dynamic_state_2);
+     }
+     if (!extended_dynamic_state_3_blend) {
+-        if (maxwell3d.dirty.flags[Dirty::Blending]) {
+-            maxwell3d.dirty.flags[Dirty::Blending] = false;
+-            for (size_t index = 0; index < attachments.size(); ++index) {
+-                attachments[index].Refresh(regs, index);
+-                auto& attachment = attachments[index];
+-                if (color_write_enable_dynamic && attachment.mask_r == 0 &&
+-                    attachment.mask_g == 0 && attachment.mask_b == 0 &&
+-                    attachment.mask_a == 0) {
+-                    attachment.mask_r.Assign(1);
+-                    attachment.mask_g.Assign(1);
+-                    attachment.mask_b.Assign(1);
+-                    attachment.mask_a.Assign(1);
+-                }
++        // Always rebuilt: a blend register written without raising Dirty::Blending (native
++        // Switch 2 command paths) left a stale state in the key (Ocarina forest fog drawn
++        // without blending = black screen on GPUs without dynamic blend state, e.g. AMD).
++        maxwell3d.dirty.flags[Dirty::Blending] = false;
++        for (size_t index = 0; index < attachments.size(); ++index) {
++            attachments[index].Refresh(regs, index);
++            auto& attachment = attachments[index];
++            if (color_write_enable_dynamic && attachment.mask_r == 0 &&
++                attachment.mask_g == 0 && attachment.mask_b == 0 &&
++                attachment.mask_a == 0) {
++                attachment.mask_r.Assign(1);
++                attachment.mask_g.Assign(1);
++                attachment.mask_b.Assign(1);
++                attachment.mask_a.Assign(1);
+             }
+         }
+     }
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 94a36910..c2aeea56 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -1041,6 +1041,12 @@ void PipelineCache::EvictUnusedPipelines() {
+     if (device.IsMoltenVK()) {
+         return;
+     }
++    // EDEN_NX2_PRELOAD_ALL_PIPELINES asked for every cached pipeline built: evicting the ones not
++    // used yet threw the preload away after 9000 frames (Ocarina: 22,510 of 24,285, then rebuilt
++    // one by one in new places).
++    if (PreloadAllPipelines()) {
++        return;
++    }
+     // Each built pipeline holds ~0.45 MB of driver memory and none was ever destroyed, so it grew
+     // with every place a session went (title 1: 1,500 on its title screen alone). One unused for
+     // this long is destroyed; it takes 2-3 ms to build again from the driver's pipeline cache.
+@@ -1546,9 +1552,21 @@ vk::PipelineCache PipelineCache::LoadVulkanPipelineCache(const std::filesystem::
+         file.read(cache_data.data(), cache_size);
+ 
+         LOG_INFO(Render_Vulkan,
+-                 "Loaded Vulkan driver pipeline cache: ", Common::FS::PathToUTF8String(filename));
++                 "Loaded Vulkan driver pipeline cache: {}", Common::FS::PathToUTF8String(filename));
+ 
+-        return create_pipeline_cache(cache_size, cache_data.data());
++        try {
++            return create_pipeline_cache(cache_size, cache_data.data());
++        } catch (const vk::Exception& e) {
++            // The blob came from another driver or driver version (e.g. switching between
++            // MoltenVK and KosmicKrisp on macOS): the driver rejects it. Start empty instead of
++            // aborting, and drop the stale file so the next run doesn't retry it.
++            LOG_ERROR(Render_Vulkan,
++                      "Driver rejected the Vulkan pipeline cache file ({}), starting with an empty "
++                      "cache and deleting it",
++                      e.what());
++            Common::FS::RemoveFile(filename);
++            return create_pipeline_cache(0, nullptr);
++        }
+ 
+     } catch (const std::ios_base::failure& e) {
+         LOG_ERROR(Common_Filesystem, "{}", e.what());
+diff --git a/src/video_core/renderer_vulkan/vk_query_cache.cpp b/src/video_core/renderer_vulkan/vk_query_cache.cpp
+index 13e90d43..4f9d98d8 100644
+--- a/src/video_core/renderer_vulkan/vk_query_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_query_cache.cpp
+@@ -260,6 +260,11 @@ public:
+         size_t resolve_buffer_index = ObtainBuffer<true>(num_slots_used);
+         resolve_buffers.push_back(resolve_buffer_index);
+         size_t base_offset = 0;
++        // AMD's drivers wait on each query of a WAIT_BIT copy separately (3.8 us per query, ~5 ms
++        // a frame in Ocarina). Queries complete in order on the queue, so waiting for the newest
++        // one is enough before copying the range without the wait.
++        const bool wait_on_last =
++            driver_id == VK_DRIVER_ID_AMD_PROPRIETARY || driver_id == VK_DRIVER_ID_AMD_OPEN_SOURCE;
+ 
+         ApplyBanksWideOp<true>(pending_sync, [&](SamplesQueryBank* bank, size_t start,
+                                                  size_t amount) {
+@@ -267,7 +272,7 @@ public:
+             auto& resolve_buffer = buffers[resolve_buffer_index];
+             VkQueryPool query_pool = bank->GetInnerPool();
+             scheduler.RequestOutsideRenderPassOperationContext();
+-            scheduler.Record([start, amount, base_offset, query_pool,
++            scheduler.Record([start, amount, base_offset, query_pool, wait_on_last,
+                               buffer = *resolve_buffer](vk::CommandBuffer cmdbuf) {
+                 const VkBufferMemoryBarrier copy_query_pool_barrier{
+                     .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+@@ -281,10 +286,37 @@ public:
+                     .size = amount * SamplesQueryBank::QUERY_SIZE,
+                 };
+ 
+-                cmdbuf.CopyQueryPoolResults(
+-                    query_pool, static_cast<u32>(start), static_cast<u32>(amount), buffer,
+-                    static_cast<u32>(base_offset), SamplesQueryBank::QUERY_SIZE,
+-                    VK_QUERY_RESULT_WAIT_BIT | VK_QUERY_RESULT_64_BIT);
++                if (!wait_on_last || amount == 1) {
++                    cmdbuf.CopyQueryPoolResults(
++                        query_pool, static_cast<u32>(start), static_cast<u32>(amount), buffer,
++                        static_cast<u32>(base_offset), SamplesQueryBank::QUERY_SIZE,
++                        VK_QUERY_RESULT_WAIT_BIT | VK_QUERY_RESULT_64_BIT);
++                } else {
++                    const size_t last = amount - 1;
++                    const VkDeviceSize last_offset =
++                        base_offset + last * SamplesQueryBank::QUERY_SIZE;
++                    cmdbuf.CopyQueryPoolResults(query_pool, static_cast<u32>(start + last), 1,
++                                                buffer, last_offset, SamplesQueryBank::QUERY_SIZE,
++                                                VK_QUERY_RESULT_WAIT_BIT | VK_QUERY_RESULT_64_BIT);
++                    // Orders the unwaited copy after the waited one.
++                    const VkBufferMemoryBarrier waited_barrier{
++                        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
++                        .pNext = nullptr,
++                        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
++                        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
++                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++                        .buffer = buffer,
++                        .offset = last_offset,
++                        .size = SamplesQueryBank::QUERY_SIZE,
++                    };
++                    cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
++                                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, waited_barrier);
++                    cmdbuf.CopyQueryPoolResults(
++                        query_pool, static_cast<u32>(start), static_cast<u32>(last), buffer,
++                        static_cast<u32>(base_offset), SamplesQueryBank::QUERY_SIZE,
++                        VK_QUERY_RESULT_64_BIT);
++                }
+                 cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, copy_query_pool_barrier);
+             });
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index ed5fa5af..5cfca34a 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -7,6 +7,7 @@
+ #include <algorithm>
+ #include <limits>
+ #include <array>
++#include <atomic>
+ #include <cstdlib>
+ #include <optional>
+ #include <span>
+@@ -172,6 +173,42 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
+     return bytes * info.resources.layers > (u64{1} << 30);
+ }
+ 
++// Whether a block-compressed copy of `info` has a mip level whose size in 4x4 blocks is not its
++// level 0 block count shifted down (341 texels: 86 blocks at level 0, 85 texels = 22 blocks at
++// level 2, not 86 >> 2 = 21). On AMD (RX 6600 XT, Windows driver) the BC1/BC3 copies of such
++// images show dark lines along the seams of distant terrain in title 1; RGBA8 copies don't.
++[[nodiscard]] bool HasUnevenBlockMips(const ImageInfo& info) {
++    const u32 blocks_x = Common::DivCeil(info.size.width, 4U);
++    const u32 blocks_y = Common::DivCeil(info.size.height, 4U);
++    for (s32 level = 1; level < info.resources.levels; ++level) {
++        const u32 level_x = Common::DivCeil((std::max)(info.size.width >> level, 1U), 4U);
++        const u32 level_y = Common::DivCeil((std::max)(info.size.height >> level, 1U), 4U);
++        if (level_x != (std::max)(blocks_x >> level, 1U) ||
++            level_y != (std::max)(blocks_y >> level, 1U)) {
++            return true;
++        }
++    }
++    return false;
++}
++
++// ASTC that would be re-compressed to BC1/BC3 but has uneven block mips (HasUnevenBlockMips) on
++// an AMD driver, which samples those wrong: kept as the GPU decoder's RGBA8 instead, like huge
++// arrays.
++[[nodiscard]] bool IsUnevenMipRgba8Astc(const Device& device, const ImageInfo& info) {
++    if (!IsPixelFormatASTC(info.format) || device.IsOptimalAstcSupported() ||
++        info.type != ImageType::e2D || info.size.depth != 1 || info.resources.levels <= 1 ||
++        Settings::values.accelerate_astc.GetValue() != Settings::AstcDecodeMode::Gpu ||
++        Settings::GetAstcRecompression() == Settings::AstcRecompression::Uncompressed) {
++        return false;
++    }
++    const VkDriverIdKHR id = device.GetDriverID();
++    if (id != VK_DRIVER_ID_AMD_PROPRIETARY && id != VK_DRIVER_ID_AMD_OPEN_SOURCE &&
++        id != VK_DRIVER_ID_MESA_RADV) {
++        return false;
++    }
++    return HasUnevenBlockMips(info) && !IsHugeAstcArray(device, info);
++}
++
+ // A large image over Switch 2 sparse blocks nobody has written (title 1's terrain layer pools, 2.9
+ // GB of R8/RG16/R16 that stay empty in the attract demo) is all zeros: it gets no device memory
+ // until a write makes the texture cache replace it.
+@@ -283,9 +320,10 @@ enum class SparseTilesMode {
+                                                            : (VkDeviceSize{768} << 20);
+ }
+ 
+-// The host format of a huge ASTC array: the GPU decoder's RGBA8 (sRGB kept for sampling).
++// The host format of a huge ASTC array or of ASTC with uneven block mips: the GPU decoder's RGBA8
++// (sRGB kept for sampling).
+ [[nodiscard]] std::optional<VkFormat> HugeAstcHostFormat(const Device& device, const ImageInfo& info) {
+-    if (!IsHugeAstcArray(device, info)) {
++    if (!IsHugeAstcArray(device, info) && !IsUnevenMipRgba8Astc(device, info)) {
+         return std::nullopt;
+     }
+     return VideoCore::Surface::IsPixelFormatSRGB(info.format) ? VK_FORMAT_A8B8G8R8_SRGB_PACK32
+@@ -297,7 +335,8 @@ constexpr std::array<VkFormat, 2> HugeAstcViewFormats{VK_FORMAT_A8B8G8R8_UNORM_P
+ 
+ // Opaque ASTC (ImageInfo::astc_opaque) re-compressed to BC1 instead of BC3.
+ [[nodiscard]] bool IsOpaqueBc1Astc(const Device& device, const ImageInfo& info) {
+-    return info.astc_opaque && IsPixelFormatASTC(info.format) && !IsHugeAstcArray(device, info);
++    return info.astc_opaque && IsPixelFormatASTC(info.format) && !IsHugeAstcArray(device, info) &&
++           !IsUnevenMipRgba8Astc(device, info);
+ }
+ 
+ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM_BLOCK,
+@@ -315,7 +354,8 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
+ // decode, so streamed textures are ready the frame they are first used instead of seconds later.
+ [[nodiscard]] bool WillUseGpuBcnTranscode(const Device& device, const ImageInfo& info) {
+     if (!IsPixelFormatASTC(info.format) || device.IsOptimalAstcSupported() ||
+-        IsHugeAstcArray(device, info) || info.type != ImageType::e2D || info.size.depth != 1) {
++        IsHugeAstcArray(device, info) || IsUnevenMipRgba8Astc(device, info) ||
++        info.type != ImageType::e2D || info.size.depth != 1) {
+         return false;
+     }
+     return Settings::values.accelerate_astc.GetValue() == Settings::AstcDecodeMode::Gpu &&
+@@ -326,7 +366,7 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
+     if (!IsPixelFormatASTC(info.format) || device.IsOptimalAstcSupported()) {
+         return false;
+     }
+-    if (IsHugeAstcArray(device, info)) {
++    if (IsHugeAstcArray(device, info) || IsUnevenMipRgba8Astc(device, info)) {
+         return true;
+     }
+     if (Settings::values.accelerate_astc.GetValue() != Settings::AstcDecodeMode::Gpu) {
+@@ -2660,7 +2700,8 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
+       runtime{&runtime_},
+       original_image(MakeImage(runtime_.device, runtime_.memory_allocator,
+                                TrimmedHostInfo(runtime_.device, info, host_level_offset),
+-                               IsHugeAstcArray(runtime_.device, info)
++                               IsHugeAstcArray(runtime_.device, info) ||
++                                       IsUnevenMipRgba8Astc(runtime_.device, info)
+                                    ? std::span<const VkFormat>{HugeAstcViewFormats}
+                                : IsOpaqueBc1Astc(runtime_.device, info)
+                                    ? std::span<const VkFormat>{OpaqueAstcViewFormats}
+@@ -2725,6 +2766,17 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
+                 WillUseGpuBcnTranscode(runtime->device, info)) {
+                 flags |= VideoCommon::ImageFlagBits::AcceleratedUpload;
+             }
++            if (IsUnevenMipRgba8Astc(runtime->device, info)) {
++                static std::atomic<u32> uneven_images{0};
++                const u32 count = ++uneven_images;
++                if (count <= 4 || (count & (count - 1)) == 0) {
++                    LOG_INFO(Render_Vulkan,
++                             "ASTC {}x{}x{} with {} levels kept as RGBA8 (uneven BC block mips), "
++                             "{} images so far",
++                             info.size.width, info.size.height, info.resources.layers,
++                             info.resources.levels, count);
++                }
++            }
+             break;
+         case Settings::AstcDecodeMode::CpuAsynchronous:
+             flags |= VideoCommon::ImageFlagBits::AsynchronousDecode;
+@@ -3995,7 +4047,7 @@ ImageView::ImageView(TextureCacheRuntime& runtime, const VideoCommon::ImageViewI
+         }
+     }
+     auto format_info = MaxwellToVK::SurfaceFormat(*device, FormatType::Optimal, true, format);
+-    if (IsHugeAstcArray(*device, image.info)) {
++    if (IsHugeAstcArray(*device, image.info) || IsUnevenMipRgba8Astc(*device, image.info)) {
+         format_info.format = VideoCore::Surface::IsPixelFormatSRGB(format)
+                                  ? VK_FORMAT_A8B8G8R8_SRGB_PACK32
+                                  : VK_FORMAT_A8B8G8R8_UNORM_PACK32;
+@@ -4353,6 +4405,10 @@ Sampler::VariantKey Sampler::MakeKey(const ImageView& image_view, bool is_depth)
+     key.drop_reduction = has_minmax_reduction && !image_view.SupportsMinmaxFilter();
+     key.drop_custom_border = has_custom_border_colors && image_view.RequiresBorderColorFormat();
+     key.srgb_border = has_srgb_border_color && IsPixelFormatSRGB(image_view.format);
++    // A compare-enabled TSC read by a plain (non-Dref) sample: Maxwell ignores the comparison,
++    // Vulkan leaves it undefined and AMD returns the 0/1 compare result (Ocarina forest fog
++    // composite read alpha 0 -> black screen). Use a variant without comparison.
++    key.drop_compare = has_depth_comparison && !is_depth;
+     if (needs_swizzle_mapping && !key.drop_custom_border && !image_view.HasIdentitySwizzle()) {
+         const VkComponentMapping& mapping = image_view.Swizzle();
+         key.swizzle = {mapping.r, mapping.g, mapping.b, mapping.a};
+@@ -4416,6 +4472,9 @@ VkSampler Sampler::Emplace(VariantKey key) {
+     }
+ 
+     VkSamplerCreateInfo create_info = base_ci;
++    if (key.drop_compare) {
++        create_info.compareEnable = VK_FALSE;
++    }
+     create_info.pNext = chain;
+     if (key.force_nearest) {
+         create_info.magFilter = VK_FILTER_NEAREST;
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.h b/src/video_core/renderer_vulkan/vk_texture_cache.h
+index df3d3d79..4381efbd 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.h
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.h
+@@ -792,6 +792,7 @@ private:
+         bool drop_reduction;
+         bool drop_custom_border;
+         bool srgb_border;
++        bool drop_compare;
+         std::array<VkComponentSwizzle, 4> swizzle;
+ 
+         bool operator==(const VariantKey&) const noexcept = default;
+diff --git a/src/video_core/shader_environment.cpp b/src/video_core/shader_environment.cpp
+index 57d151af..c451c1c5 100644
+--- a/src/video_core/shader_environment.cpp
++++ b/src/video_core/shader_environment.cpp
+@@ -347,9 +347,29 @@ Tegra::Texture::TICEntry GenericEnvironment::ReadTextureInfo(GPUVAddr tic_addr,
+     const auto handle{Tegra::Texture::TexturePair(raw, via_header_index)};
+     const u32 index{Tegra::Texture::TextureHeaderIndex(handle.first, tic_limit,
+                                                        gpu_memory->UsesNativeTiling())};
+-    ASSERT(index <= tic_limit);
+-    const GPUVAddr descriptor_addr{tic_addr + index * sizeof(Tegra::Texture::TICEntry)};
+     Tegra::Texture::TICEntry entry;
++    if (index > tic_limit) {
++        // Past the pool, the bytes are not a descriptor: reading them gave the shader a random
++        // texture type and format (garbage-format asserts, then crashes and device losses on AMD
++        // in Ocarina of Time). At draw time the texture cache binds the null view for such an
++        // index (VisitImageView), so compile for what that view is: a plain 2D RGBA8 texture.
++        static std::atomic<u32> warnings{};
++        if (warnings.fetch_add(1, std::memory_order_relaxed) < 16) {
++            LOG_WARNING(HW_GPU, "Texture handle {:#x} indexes past the descriptor pool "
++                                "(index {} > limit {}); using a null 2D texture",
++                        raw, index, tic_limit);
++        }
++        entry.raw.fill(0);
++        entry.format.Assign(Tegra::Texture::TextureFormat::A8B8G8R8);
++        entry.r_type.Assign(Tegra::Texture::ComponentType::UNORM);
++        entry.g_type.Assign(Tegra::Texture::ComponentType::UNORM);
++        entry.b_type.Assign(Tegra::Texture::ComponentType::UNORM);
++        entry.a_type.Assign(Tegra::Texture::ComponentType::UNORM);
++        entry.texture_type.Assign(Tegra::Texture::TextureType::Texture2D);
++        entry.normalized_coords.Assign(1);
++        return entry;
++    }
++    const GPUVAddr descriptor_addr{tic_addr + index * sizeof(Tegra::Texture::TICEntry)};
+     gpu_memory->ReadBlock(descriptor_addr, &entry, sizeof(entry));
+     return entry;
+ }
